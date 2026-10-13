@@ -1,0 +1,26 @@
+# 验证范围
+
+本次构建在 Windows 11 x64 完成：Debug/Release 均零编译警告与错误，39 项核心检查通过；真实管理员安装测试通过了服务安装/启动、托盘重启、服务崩溃恢复、守护退出、30 秒心跳超时、管理口令重置、错误/取消/重放/修改/冷却/退出及两种卸载配置策略。口令窗口的初始设置、修改与解锁输入均经过真实 WinForms 控件读取验证和布局检查。
+
+该机器的真实 Windows HID 枚举结果为无标准触摸屏。因此上述设备禁用/回滚/恢复是模拟后端验证；不能声称实际触摸输入停止/恢复已验收。Windows 10、睡眠/锁屏/设备热插拔与 OEM 私有通道的实机行为尚未验收。
+
+核心测试入口：`dotnet run --project tests/TouchLock.Core.Tests -c Release`。构建脚本自动运行。
+
+测试涵盖：多设备事务、原本禁用节点不归本工具、部分失败回滚、恢复失败保留与重试、混合身份/不可动态禁用拒绝、损坏恢复记录、PBKDF2 参数/随机盐/口令边界/损坏配置、V2 帧与二进制口令上限。
+
+管理员集成测试使用 Debug 安装包，在真实 SCM/Program Files/ProgramData 中安装和卸载，验证真实 SYSTEM 恢复进程、二进制认证、错误/取消/重放/修改/冷却/退出、托盘终止重启与服务故障恢复。测试口令随机生成，只经 stdin 二进制通道传递，不写日志或命令行。测试入口不编入 Release。
+
+物理触摸验收必须在有标准触摸屏的电脑完成：
+
+1. 先测试鼠标键盘正常，并保留管理员维护入口。
+2. 锁定后点击、拖动、缩放、滑动无效；键鼠仍正常。
+3. 错误口令和取消保持锁定；正确口令恢复触摸。
+4. 锁定期间结束 Tray 不解锁；服务/守护故障符合恢复策略。
+5. 检查睡眠、锁屏、热插拔和重启后的恢复。
+6. 卸载后原触摸设备、原厂驱动和键鼠配置保持可用。
+
+没有触摸硬件时，设备事务测试使用可替换的模拟后端，不能证明真实 HID 禁用或 OEM 私有输入覆盖。希沃真机不作为此交付门槛。Windows 10 与各 OEM 兼容性需由目标电脑核对。
+
+自定义安装位置已在 D 盘包含中文、空格、嵌套新目录的路径完成真实管理员集成测试：注册位置、SCM 引号、目录所有者与 ACL、快捷方式、托盘/恢复进程、口令重置和两种卸载配置策略均通过。测试前保存、结束后原样恢复了已有口令文件及 ACL。安装位置窗口已完成截图布局检查。
+
+UU 手机平板触控模式的现场测试收到 39 次 `PointerType=2 (PT_TOUCH)`、`DeviceType=4`、`Origin=2 (IMO_INJECTED)` 的触摸按下事件，也观察到触摸提升出的鼠标消息。来源标记使用 [GetCurrentInputMessageSource](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getcurrentinputmessagesource) 和 [INPUT_MESSAGE_ORIGIN_ID](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ne-winuser-input_message_origin_id)。应用后端同时枚举到零个标准 HID 触摸屏，UU 的设备集合为键鼠及厂商自定义通道。因此可用于界面触摸响应测试，不能替代当前设备禁用/恢复的硬件验收。诊断入口仅编入 Debug：`TouchLock.exe --probe-input <日志路径>`，只记录测试窗口收到的消息，不监听或拦截其他窗口。

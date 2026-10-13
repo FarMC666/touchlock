@@ -1,0 +1,1 @@
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><OutputType>Exe</OutputType><AssemblyName>TouchLock.Service</AssemblyName></PropertyGroup><ItemGroup><ProjectReference Include="../TouchLock.Shared/TouchLock.Shared.csproj" /><FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" /></ItemGroup></Project>

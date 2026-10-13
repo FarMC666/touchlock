@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><OutputType>WinExe</OutputType><UseWindowsForms>true</UseWindowsForms><ApplicationManifest>app.manifest</ApplicationManifest><PublishSingleFile>true</PublishSingleFile><IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract><EnableCompressionInSingleFile>true</EnableCompressionInSingleFile></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../TouchLock.Shared/TouchLock.Shared.csproj" /><Compile Include="../TouchLock.UI/PasswordDialog.cs" Link="PasswordDialog.cs" /></ItemGroup>
+  <ItemGroup Condition="'$(TouchLockPayload)' != ''"><EmbeddedResource Include="$(TouchLockPayload)" LogicalName="TouchLock.Payload.zip" /></ItemGroup>
+</Project>

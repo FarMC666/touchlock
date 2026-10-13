@@ -1,0 +1,13 @@
+artifacts/
+.tools/
+.vs/
+**/bin/
+**/obj/
+*.user
+*.suo
+*.pdb
+*.ilk
+*.obj
+*.tlog/
+*.log
+
