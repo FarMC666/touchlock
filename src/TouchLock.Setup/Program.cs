@@ -24,8 +24,9 @@ internal static class Program
         if (args.SequenceEqual(["--test-install"])) return TestInstall();
         if (args.Length == 2 && args[0] == "--test-install") return TestInstall(directory: args[1]);
         if (args.SequenceEqual(["--test-reset"])) return TestInstall(reset: true);
-        if (args.SequenceEqual(["--test-uninstall"])) { Installer.Uninstall(true); return 0; }
-        if (args.SequenceEqual(["--test-uninstall-keep"])) { Installer.Uninstall(false); return 0; }
+        if (args.SequenceEqual(["--test-uninstall"])) return TestUninstall(true);
+        if (args.SequenceEqual(["--test-uninstall-keep"])) return TestUninstall(false);
+        if (args.SequenceEqual(["--test-uninstall-cancel"])) return TestCancelUninstall();
         if (args.Length == 2 && args[0] == "--preview-setup")
         {
             using var form = new SetupForm { ShowInTaskbar = false, Opacity = 0 };
@@ -49,6 +50,28 @@ internal static class Program
     {
         byte[] password = Wire.ReadSecret(Console.OpenStandardInput(), CancellationToken.None).GetAwaiter().GetResult();
         try { if (reset) Installer.Reset(password); else Installer.Install(password, directory); return 0; } finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(password); }
+    }
+    private static int TestUninstall(bool deleteConfiguration)
+    {
+        byte[] password = Wire.ReadSecret(Console.OpenStandardInput(), CancellationToken.None).GetAwaiter().GetResult();
+        try { Installer.Uninstall(deleteConfiguration, password); return 0; }
+        catch (UnauthorizedAccessException e) { Console.Error.WriteLine(e.Message); return 10; }
+        catch (IOException e) { Console.Error.WriteLine(e.Message); return 11; }
+        finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(password); }
+    }
+    private static int TestCancelUninstall()
+    {
+        using var form = new SetupForm { ShowInTaskbar = false, Opacity = 0 };
+        using var timer = new System.Windows.Forms.Timer { Interval = 100 };
+        bool cancelled = false;
+        timer.Tick += (_, _) =>
+        {
+            var dialog = Application.OpenForms.OfType<PasswordDialog>().FirstOrDefault();
+            if (dialog == null) return;
+            timer.Stop(); cancelled = true; ((Button)dialog.CancelButton!).PerformClick();
+        };
+        form.Shown += (_, _) => { timer.Start(); form.BeginInvoke(() => { form.TestUninstallClick(); form.Close(); }); };
+        Application.Run(form); return cancelled ? 0 : 12;
     }
 #endif
 }
@@ -96,8 +119,17 @@ internal sealed class SetupForm : Form
             if (dialog.ShowDialog(this) == DialogResult.OK) { Installer.Reset(dialog.NewPassword); MessageBox.Show(this, "管理口令已重置，触摸已恢复。", "TouchLock"); }
             else { try { Services.Start(); } catch { } }
         });
-        uninstall.Click += (_, _) => Execute(() => { Installer.Uninstall(delete.Checked); MessageBox.Show(this, "TouchLock 已卸载，触摸已恢复。", "TouchLock"); Close(); });
+        uninstall.Click += (_, _) => Execute(() =>
+        {
+            using var dialog = new PasswordDialog(uninstall: true);
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            Installer.Uninstall(delete.Checked, dialog.Password);
+            MessageBox.Show(this, "TouchLock 已卸载，触摸已恢复。", "TouchLock"); Close();
+        });
     }
+#if DEBUG
+    internal void TestUninstallClick() => uninstall.PerformClick();
+#endif
     private void Execute(Action action)
     {
         Enabled = false;

@@ -7,9 +7,9 @@ internal static class Diagnostic
     public static int Preview(string directory)
     {
         Directory.CreateDirectory(directory);
-        foreach (string mode in new[] { "initial", "change", "unlock" })
+        foreach (string mode in new[] { "initial", "change", "unlock", "uninstall" })
         {
-            using var form = new TouchLock.UI.PasswordDialog(initialize: mode == "initial", change: mode == "change");
+            using var form = new TouchLock.UI.PasswordDialog(initialize: mode == "initial", change: mode == "change", uninstall: mode == "uninstall");
             string sample = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
             form.ShowInTaskbar = false; form.Opacity = 0;
             form.Shown += (_, _) =>
@@ -24,7 +24,7 @@ internal static class Diagnostic
             byte[] expected = System.Text.Encoding.UTF8.GetBytes(sample);
             try
             {
-                if (form.DialogResult != DialogResult.OK || !CryptographicOperations.FixedTimeEquals(mode == "unlock" ? form.Password : form.NewPassword, expected)) throw new InvalidOperationException($"UI password capture failed: result={form.DialogResult}, bytes={form.NewPassword.Length}/{form.Password.Length}, expected={expected.Length}.");
+                if (form.DialogResult != DialogResult.OK || !CryptographicOperations.FixedTimeEquals(mode is "unlock" or "uninstall" ? form.Password : form.NewPassword, expected)) throw new InvalidOperationException($"UI password capture failed: result={form.DialogResult}, bytes={form.NewPassword.Length}/{form.Password.Length}, expected={expected.Length}.");
                 Console.WriteLine("PASS UI password input " + mode);
             }
             finally { CryptographicOperations.ZeroMemory(expected); }

@@ -94,9 +94,16 @@ internal static class Installer
     {
         RequireAdmin(); StopAndRestore(); new PasswordStore(Paths.Password).Set(password); WindowsSecurity.ProtectFile(Paths.Password); Services.Start();
     }
-    public static void Uninstall(bool deleteConfiguration)
+    public static void Uninstall(bool deleteConfiguration, ReadOnlySpan<byte> password)
     {
-        RequireAdmin(); StopAndRestore();
+        RequireAdmin();
+        bool verified;
+        try { verified = new PasswordStore(Paths.Password).Verify(password); }
+        catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        { throw new IOException("无法验证管理口令。请通过维护界面重置口令后再卸载。", e); }
+        if (!verified) throw new UnauthorizedAccessException("管理口令不正确，未卸载 TouchLock。");
+        // Authentication must precede every operation that stops the service or restores touch.
+        StopAndRestore();
         string install = Paths.Install;
         foreach (var p in Process.GetProcessesByName("TouchLock"))
         {

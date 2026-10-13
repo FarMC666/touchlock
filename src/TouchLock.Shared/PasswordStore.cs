@@ -21,7 +21,7 @@ public sealed class PasswordStore(string path)
     {
         if (new FileInfo(path).Length > 4096) throw new InvalidDataException("口令配置损坏，请运行安装程序重置。");
         var r = JsonSerializer.Deserialize<PasswordRecord>(File.ReadAllBytes(path)) ?? throw new InvalidDataException();
-        if (r.Version != 1 || r.Algorithm != "PBKDF2-HMAC-SHA256" || r.Iterations != Iterations || r.Salt.Length != 16 || r.Hash.Length != 32) throw new InvalidDataException("口令配置损坏，请运行安装程序重置。");
+        if (r.Version != 1 || r.Algorithm != "PBKDF2-HMAC-SHA256" || r.Iterations != Iterations || r.Salt is not { Length: 16 } || r.Hash is not { Length: 32 }) throw new InvalidDataException("口令配置损坏，请运行安装程序重置。");
         return r;
     }
     public bool Verify(ReadOnlySpan<byte> password)

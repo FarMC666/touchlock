@@ -31,6 +31,8 @@ SetupAPI 只枚举当前存在的 HID 类节点，通过兼容 ID `HID_DEVICE_UP
 
 PBKDF2-HMAC-SHA256：600,000 迭代、16 字节随机盐、32 字节哈希，恒定时间比较。记录含固定版本与算法参数，位于 `%ProgramData%\TouchLock\password.json`，SYSTEM/Admin ACL，禁止链接路径。错误五次后全局暂停 30 秒。初始设置和忘记口令重置由提升权限 Setup 执行；复位先停止服务并恢复设备。
 
+Setup 卸载须提供当前管理口令，并在停止服务、恢复设备或删除文件前直接验证受保护的口令记录；错误、取消或配置损坏不执行卸载。密码缓冲区在对话框或测试入口结束后清除。管理员忘记口令的重置恢复入口保留，不能将 Windows 提升权限直接当作卸载口令验证成功。
+
 ## 状态与恢复
 
 `Unlocked → Locking → Locked → Authenticating → Restoring → Unlocked/Stopping`。错误、取消、超时和托盘进程退出返回认证前状态。未锁定的退出认证取消仍未锁定；修改口令保留原锁定状态。恢复失败保持 Restoring，保留服务与恢复记录。
