@@ -12,6 +12,7 @@ public static class Paths
     public static string Install => InstallationDirectory.Installed;
     public static string Password => Path.Combine(Data, "password.json");
     public static string Journal => Path.Combine(Data, "recovery.json");
+    public static string Restrictions => Path.Combine(Data, "restrictions.json");
     public static void NoLinks(string path)
     {
         for (var d = new DirectoryInfo(path); d != null; d = d.Parent)

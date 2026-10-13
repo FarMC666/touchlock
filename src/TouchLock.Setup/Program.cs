@@ -80,7 +80,7 @@ internal sealed class SetupForm : Form
     private readonly Button install = new() { Text = "安装并设置管理口令", Width = 380, Height = 40 };
     private readonly Button reset = new() { Text = "重置忘记的管理口令", Width = 380, Height = 40 };
     private readonly Button uninstall = new() { Text = "卸载 TouchLock", Width = 380, Height = 40 };
-    private readonly CheckBox delete = new() { Text = "卸载时同时删除口令配置", AutoSize = true };
+    private readonly CheckBox delete = new() { Text = "卸载时同时删除口令和蓝牙限制配置", AutoSize = true };
     private readonly TextBox location = new() { Width = 390 };
     private readonly Button browse = new() { Text = "浏览...", Width = 85, Height = 33 };
     public SetupForm()

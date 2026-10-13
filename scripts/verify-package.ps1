@@ -15,10 +15,15 @@ foreach ($name in @('TouchLock','TouchLock.Service','TouchLock.Recovery')) {
  Check ($config.runtimeOptions.includedFrameworks.Count -eq 2 -and !$config.runtimeOptions.frameworks) "$name runtime self contained"
 }
 Check (@(Get-ChildItem -LiteralPath (Join-Path $root 'payload') -Recurse -File | Where-Object Extension -in @('.sys','.inf','.cat')).Count -eq 0) 'no custom driver payload'
+foreach ($name in @('UIAutomationClient.dll','UIAutomationTypes.dll','WindowsBase.dll')) {
+ $path = Join-Path $root "payload/$name"
+ Check (Test-Path -LiteralPath $path) "Bluetooth settings monitor runtime included: $name"
+ Check ((Get-FileHash -LiteralPath $path).Hash -eq (Get-FileHash -LiteralPath (Join-Path $root "publish-App/$name")).Hash) "Bluetooth settings monitor runtime matches App: $name"
+}
 foreach ($name in @('TouchLock','TouchLock.Service')) {
  $bytes = [IO.File]::ReadAllBytes((Join-Path $root "payload/$name.dll"))
  $text = [Text.Encoding]::Unicode.GetString($bytes)
- Check (!$text.Contains('--test-authentication') -and !$text.Contains('test-pause') -and !$text.Contains('--preview-ui') -and !$text.Contains('--probe-input')) "$name release excludes test controls"
+ Check (!$text.Contains('--test-authentication') -and !$text.Contains('test-pause') -and !$text.Contains('--preview-ui') -and !$text.Contains('--probe-input') -and !$text.Contains('--test-bluetooth-settings')) "$name release excludes test controls"
 }
 $archive = Join-Path $repo 'artifacts/TouchLock-1.0.0-source.zip'
 $zip = [IO.Compression.ZipFile]::OpenRead($archive)

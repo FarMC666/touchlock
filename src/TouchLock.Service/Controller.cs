@@ -6,9 +6,12 @@ namespace TouchLock.Service;
 internal sealed class Controller : IDisposable
 {
     private readonly object gate = new();
-    private readonly DeviceTransaction devices = new(new WindowsDevices(), Paths.Journal);
-    private readonly PasswordStore passwords = new(Paths.Password);
-    private readonly WindowsDevices backend = new();
+    private readonly DeviceTransaction devices;
+    private readonly PasswordStore passwords;
+    private readonly IDeviceBackend backend;
+    private readonly RestrictionsStore restrictions;
+    private bool bluetoothSettingsBlocked;
+    private string bluetoothSettingsError = "";
     private LockState state = LockState.Unlocked, origin;
     private long generation, deadline, lastTray, cooldown;
     private int failures, sessionChange;
@@ -19,6 +22,13 @@ internal sealed class Controller : IDisposable
     private ClientIdentity? owner;
     private Process? guard;
     private NamedPipeServerStream? lease;
+    public Controller() : this(new WindowsDevices(), Paths.Password, Paths.Journal, Paths.Restrictions) { }
+    internal Controller(IDeviceBackend backend, string passwordPath, string journalPath, string restrictionsPath)
+    {
+        this.backend = backend; devices = new(backend, journalPath); passwords = new(passwordPath); restrictions = new(restrictionsPath);
+        try { bluetoothSettingsBlocked = restrictions.Read(); }
+        catch { bluetoothSettingsBlocked = true; bluetoothSettingsError = "蓝牙设置限制配置读取失败，已保持限制；可输入管理口令取消限制后重新设置。"; }
+    }
     public void SessionChanged() => Interlocked.Exchange(ref sessionChange, 1);
     private bool GuardHealthy => !guardFailed && guard is { HasExited: false } && lease is { IsConnected: true };
     private static long Now => Environment.TickCount64;
@@ -43,7 +53,7 @@ internal sealed class Controller : IDisposable
     {
         string unavailable = reason.Length > 0 ? reason : Availability();
         var shown = state == LockState.Unlocked && unavailable.Length > 0 ? LockState.Unavailable : state;
-        return new(shown, generation, unavailable.Length == 0, unavailable, stop);
+        return new(shown, generation, unavailable.Length == 0, unavailable, stop, bluetoothSettingsBlocked, bluetoothSettingsError);
     }
     public async Task Run(CancellationToken shutdown)
     {
@@ -147,12 +157,17 @@ internal sealed class Controller : IDisposable
         }
     }
     private ControlReply Reply(bool success, string error = "", Guid id = default) => new(success, Status(), error, id);
-    private ControlReply Command(ControlRequest command, ClientIdentity client)
+    internal ControlReply Command(ControlRequest command, ClientIdentity client)
     {
 #if DEBUG
         if (command.Operation == "test-pause") { Thread.Sleep(35000); return Reply(false); }
 #endif
         if (command.Operation == "status") { lastTray = Now; return Reply(true); }
+        if (command.Operation == "block-bluetooth-settings")
+        {
+            if (stop) return Reply(false, "TouchLock 正在退出。");
+            return SetBluetoothSettingsBlocked(true);
+        }
         if (command.Operation == "lock")
         {
             if (state is LockState.Locked or LockState.Authenticating) return Reply(true);
@@ -166,6 +181,7 @@ internal sealed class Controller : IDisposable
         {
             if (state is not (LockState.Unlocked or LockState.Locked)) return Reply(false, "已有认证或设备操作正在进行。");
             if (!Enum.IsDefined(command.Intent) || command.Intent == AuthenticationIntent.Unlock && state != LockState.Locked) return Reply(false, "触摸尚未锁定。");
+            if (command.Intent == AuthenticationIntent.AllowBluetoothSettings && !bluetoothSettingsBlocked) return Reply(false, "当前未禁止进入 Windows 蓝牙设置。");
             if (Now < cooldown) return Reply(false, "错误尝试过多，请等待 30 秒再试。");
             origin = state; intent = command.Intent; owner = client; requestId = Guid.NewGuid(); deadline = Now + 180000;
             Transition(LockState.Authenticating); return Reply(true, id: requestId);
@@ -173,7 +189,15 @@ internal sealed class Controller : IDisposable
         if (command.Operation == "cancel" && command.RequestId == requestId && owner == client) { Cancel(); return Reply(true); }
         return Reply(false, "请求无效。");
     }
-    private ControlReply Authenticate(ControlRequest command, ClientIdentity client, byte[] password, byte[] replacement)
+    private ControlReply SetBluetoothSettingsBlocked(bool blocked)
+    {
+        try
+        {
+            restrictions.Set(blocked); bluetoothSettingsBlocked = blocked; bluetoothSettingsError = ""; generation++; return Reply(true);
+        }
+        catch { bluetoothSettingsError = "蓝牙设置限制保存失败，原设置保持不变。请稍后重试，或运行安装程序维护。"; return Reply(false, bluetoothSettingsError); }
+    }
+    internal ControlReply Authenticate(ControlRequest command, ClientIdentity client, byte[] password, byte[] replacement)
     {
         if (command.Operation != "submit" || state != LockState.Authenticating || command.RequestId == Guid.Empty || command.RequestId != requestId || owner != client || Now >= deadline) return Reply(false, "认证已过期，请重新打开认证窗口。");
         try
@@ -187,6 +211,10 @@ internal sealed class Controller : IDisposable
             if (intent == AuthenticationIntent.ChangePassword)
             {
                 passwords.Set(replacement); Cancel(); return Reply(true);
+            }
+            if (intent == AuthenticationIntent.AllowBluetoothSettings)
+            {
+                Cancel(); return SetBluetoothSettingsBlocked(false);
             }
             var action = intent; Cancel(); Restore();
             if (devices.Pending) return Reply(false, reason);

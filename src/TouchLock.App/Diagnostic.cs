@@ -7,9 +7,9 @@ internal static class Diagnostic
     public static int Preview(string directory)
     {
         Directory.CreateDirectory(directory);
-        foreach (string mode in new[] { "initial", "change", "unlock", "uninstall" })
+        foreach (string mode in new[] { "initial", "change", "unlock", "uninstall", "bluetooth" })
         {
-            using var form = new TouchLock.UI.PasswordDialog(initialize: mode == "initial", change: mode == "change", uninstall: mode == "uninstall");
+            using var form = new TouchLock.UI.PasswordDialog(initialize: mode == "initial", change: mode == "change", uninstall: mode == "uninstall", allowBluetoothSettings: mode == "bluetooth");
             string sample = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
             form.ShowInTaskbar = false; form.Opacity = 0;
             form.Shown += (_, _) =>
@@ -24,12 +24,54 @@ internal static class Diagnostic
             byte[] expected = System.Text.Encoding.UTF8.GetBytes(sample);
             try
             {
-                if (form.DialogResult != DialogResult.OK || !CryptographicOperations.FixedTimeEquals(mode is "unlock" or "uninstall" ? form.Password : form.NewPassword, expected)) throw new InvalidOperationException($"UI password capture failed: result={form.DialogResult}, bytes={form.NewPassword.Length}/{form.Password.Length}, expected={expected.Length}.");
+                if (form.DialogResult != DialogResult.OK || !CryptographicOperations.FixedTimeEquals(mode is "unlock" or "uninstall" or "bluetooth" ? form.Password : form.NewPassword, expected)) throw new InvalidOperationException($"UI password capture failed: result={form.DialogResult}, bytes={form.NewPassword.Length}/{form.Password.Length}, expected={expected.Length}.");
                 Console.WriteLine("PASS UI password input " + mode);
             }
             finally { CryptographicOperations.ZeroMemory(expected); }
         }
         return 0;
+    }
+    public static async Task<int> RunBluetoothSettings()
+    {
+        try
+        {
+            void Check(bool result, string label) { if (!result) throw new InvalidOperationException(label); Console.WriteLine("PASS " + label); }
+            async Task Wait(Func<bool> ready, string label)
+            {
+                long until = Environment.TickCount64 + 10000;
+                while (!await Task.Run(ready)) { if (Environment.TickCount64 >= until) throw new TimeoutException(label); await Task.Delay(100); }
+            }
+            void Open(string uri) { using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri) { UseShellExecute = true }); }
+            bool BluetoothOpen()
+            {
+                try { return BluetoothSettingsMonitor.SettingsWindows().Any(BluetoothSettingsMonitor.IsBluetoothPage); }
+                catch (System.Windows.Automation.ElementNotAvailableException) { return false; } // Window closed while the test was inspecting it.
+            }
+            Check(BluetoothSettingsMonitor.IsBluetoothControl("SystemSettings_Device_BluetoothRadioToggle_ToggleSwitch") && BluetoothSettingsMonitor.IsBluetoothControl("SystemSettings_Device_BluetoothLegacyLink_Hyperlink"), "Windows 10/11 Bluetooth page identifiers");
+            Check(!BluetoothSettingsMonitor.IsBluetoothControl("Bluetooth") && !BluetoothSettingsMonitor.IsBluetoothControl("SystemSettings_Devices_MouseSpeed") && !BluetoothSettingsMonitor.IsBluetoothControl("SystemSettings_Device_BluetoothRadioToggleOther"), "navigation labels and unrelated device controls ignored");
+            using var monitor = new BluetoothSettingsMonitor();
+            Open("ms-settings:bluetooth"); await Wait(BluetoothOpen, "open Bluetooth page");
+            await Task.Delay(750); Check(await Task.Run(BluetoothOpen), "unchecked option allows Bluetooth settings");
+            monitor.Enabled = true;
+            await Wait(() => BluetoothSettingsMonitor.SettingsWindows().Count == 0, "close existing Bluetooth page");
+            Check(true, "checking option closes an already open Bluetooth settings window");
+            foreach (string uri in new[] { "ms-settings:display", "ms-settings:printers", "ms-settings:mousetouchpad" })
+            {
+                Open(uri); await Wait(() => BluetoothSettingsMonitor.SettingsWindows().Count > 0, "open " + uri);
+                await Task.Delay(1000); Check(BluetoothSettingsMonitor.SettingsWindows().Count > 0 && !await Task.Run(BluetoothOpen), "unrelated settings remain open: " + uri);
+            }
+            Open("ms-settings:bluetooth"); await Wait(() => BluetoothSettingsMonitor.SettingsWindows().Count == 0, "close navigated Bluetooth page");
+            Check(true, "navigating from another settings page to Bluetooth closes the window");
+            Open("ms-settings:bluetooth"); await Task.Delay(1500); await Wait(() => BluetoothSettingsMonitor.SettingsWindows().Count == 0, "close reopened Bluetooth page");
+            Check(true, "reopening Bluetooth settings is still blocked");
+            monitor.Enabled = false;
+            Open("ms-settings:bluetooth"); await Wait(BluetoothOpen, "allow Bluetooth again");
+            await Task.Delay(750); Check(await Task.Run(BluetoothOpen) && monitor.Error.Length == 0, "unchecking option allows Bluetooth settings again");
+            // Leave the test-opened window closed without changing Bluetooth hardware or pairing.
+            monitor.Enabled = true; await Wait(() => BluetoothSettingsMonitor.SettingsWindows().Count == 0, "close test window");
+            return 0;
+        }
+        catch (Exception e) { Console.WriteLine("FAIL " + e.GetType().Name + " " + e.Message); return 1; }
     }
     public static async Task<int> Run()
     {

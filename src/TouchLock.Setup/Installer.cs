@@ -121,7 +121,7 @@ internal static class Installer
         if (Directory.Exists(install)) Directory.Delete(install, true);
         if (deleteConfiguration)
         {
-            foreach (string name in new[] { "password.json", "recovery.json" }) { string path = Path.Combine(Paths.Data, name); if (File.Exists(path)) File.Delete(path); }
+            foreach (string name in new[] { "password.json", "recovery.json", "restrictions.json" }) { string path = Path.Combine(Paths.Data, name); if (File.Exists(path)) File.Delete(path); }
             if (Directory.Exists(Paths.Data) && !Directory.EnumerateFileSystemEntries(Paths.Data).Any()) Directory.Delete(Paths.Data);
         }
     }
