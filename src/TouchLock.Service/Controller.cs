@@ -10,6 +10,7 @@ internal sealed class Controller : IDisposable
     private readonly PasswordStore passwords;
     private readonly IDeviceBackend backend;
     private readonly RestrictionsStore restrictions;
+    private readonly IStartupConfiguration startup;
     private bool bluetoothSettingsBlocked;
     private string bluetoothSettingsError = "";
     private LockState state = LockState.Unlocked, origin;
@@ -31,10 +32,11 @@ internal sealed class Controller : IDisposable
     private readonly Func<bool>? recoveryHealthy;
     private readonly Action<Action> withDeviceMutex;
     public Controller() : this(new WindowsDevices(), Paths.Password, Paths.Journal, Paths.Restrictions) { }
-    internal Controller(IDeviceBackend backend, string passwordPath, string journalPath, string restrictionsPath, Func<bool>? recoveryHealthy = null, Action<Action>? withDeviceMutex = null, ISettingsPolicy? settingsPolicy = null)
+    internal Controller(IDeviceBackend backend, string passwordPath, string journalPath, string restrictionsPath, Func<bool>? recoveryHealthy = null, Action<Action>? withDeviceMutex = null, ISettingsPolicy? settingsPolicy = null, IStartupConfiguration? startupConfiguration = null)
     {
         this.backend = backend; devices = new(backend, journalPath); passwords = new(passwordPath); restrictions = new(restrictionsPath, settingsPolicy);
         this.recoveryHealthy = recoveryHealthy;
+        startup = startupConfiguration ?? new WindowsStartupConfiguration();
         this.withDeviceMutex = withDeviceMutex ?? WindowsSecurity.WithDeviceMutex;
         devices.Progress = () => Interlocked.Exchange(ref progressAt, Now);
         try { restrictions.Restore(); }
@@ -65,8 +67,10 @@ internal sealed class Controller : IDisposable
     {
         string unavailable = Availability();
         var shown = state == LockState.Unlocked && unavailable.Length > 0 ? LockState.Unavailable : state;
+        bool startupEnabled = false; string startupError = "";
+        try { startupEnabled = startup.Read(); } catch (Exception e) { startupError = "无法确认开机自启动：" + e.Message; }
         return new(shown, generation, unavailable.Length == 0 && !operationRunning, reason.Length > 0 ? reason : unavailable, stop, bluetoothSettingsBlocked, bluetoothSettingsError,
-            observed.Count, observed.Count(d => d.Disabled), operationId, operationRunning && !backgroundInspect, operationError, devices.Summary, Diagnostics.Error);
+            observed.Count, observed.Count(d => d.Disabled), operationId, operationRunning && !backgroundInspect, operationError, devices.Summary, Diagnostics.Error, startupEnabled, startupError);
     }
     // The gate protects state only, never a potentially slow device API. One worker owns all device I/O.
     private void StartDeviceOperation(string action, bool background = false)
@@ -298,6 +302,13 @@ internal sealed class Controller : IDisposable
             }
             failures = 0;
             Diagnostics.Write("authentication-accepted", new { Intent = intent.ToString() });
+            if (intent is AuthenticationIntent.EnableStartup or AuthenticationIntent.DisableStartup)
+            {
+                bool enable = intent == AuthenticationIntent.EnableStartup;
+                Cancel();
+                try { startup.Set(enable); generation++; Diagnostics.Write("startup-setting", new { Enabled = startup.Read() }); return Reply(true); }
+                catch (Exception e) { return Reply(false, "开机自启动设置失败：" + e.Message); }
+            }
             if (intent == AuthenticationIntent.ChangePassword)
             {
                 passwords.Set(replacement); Cancel(); return Reply(true);

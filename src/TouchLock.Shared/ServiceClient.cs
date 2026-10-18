@@ -5,6 +5,7 @@ public static class ServiceClient
 {
     public static async Task<ControlReply> Complete(ControlReply reply)
     {
+        if (!reply.Success || !reply.Status.OperationRunning) return reply;
         Guid operation = reply.Status.OperationId;
         long deadline = Environment.TickCount64 + 30 * 60 * 1000;
         while (reply.Success && reply.Status.OperationRunning && reply.Status.OperationId == operation)

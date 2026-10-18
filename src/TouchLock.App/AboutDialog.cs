@@ -14,6 +14,7 @@ internal sealed class AboutDialog : AdaptiveForm
             (hotkeyRegistered ? "" : "\n快捷键被占用，请使用托盘菜单。") +
             (status?.BluetoothSettingsError.Length > 0 ? "\n" + status.BluetoothSettingsError : "") +
             (monitorError.Length > 0 ? "\n" + monitorError : "") +
+            (status?.StartupError.Length > 0 ? "\n" + status.StartupError : "") +
             (status?.DiagnosticsError.Length > 0 ? "\n" + status.DiagnosticsError : "") +
             "\n\n诊断日志（管理员可读取）：\n" + Path.Combine(Paths.Data, "Logs") + "\n构建：" + Diagnostics.Version));
     }

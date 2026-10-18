@@ -10,14 +10,15 @@ internal sealed class PasswordDialog : AdaptiveForm
     public byte[] Password { get; private set; } = [];
     public byte[] NewPassword { get; private set; } = [];
     private static TextBox Box() => new() { UseSystemPasswordChar = true, MaxLength = 128, Dock = DockStyle.Top };
-    public PasswordDialog(bool initialize = false, bool change = false, bool exit = false, bool uninstall = false, bool allowBluetoothSettings = false)
+    public PasswordDialog(bool initialize = false, bool change = false, bool exit = false, bool uninstall = false, bool allowBluetoothSettings = false, string? actionText = null)
     {
         this.initialize = initialize; this.change = change;
         Text = initialize ? "设置 TouchLock 管理口令" : change ? "修改管理口令" : uninstall ? "卸载 TouchLock" : exit ? "退出 TouchLock" : allowBluetoothSettings ? "允许进入 Windows 蓝牙设置" : "解除触摸锁定";
+        if (actionText != null) Text = actionText;
         ClientSize = new Size(460, initialize ? 340 : change ? 410 : 300);
         var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft };
         var layout = Content(buttons);
-        layout.Controls.Add(new Label { Text = initialize ? "设置独立管理口令（8～128 个字符）。\n解除限制、退出和卸载时需要使用。" : uninstall ? "卸载前需要验证管理口令。\n恢复触摸前请移开屏幕上的手指。" : allowBluetoothSettings ? "取消蓝牙设置限制前需要验证管理口令。\n使用鼠标或物理键盘输入管理口令。" : "恢复触摸前请移开屏幕上的手指。\n使用鼠标或物理键盘输入管理口令。", AutoSize = true, Margin = new Padding(0, 0, 0, 14) });
+        layout.Controls.Add(new Label { Text = actionText != null ? actionText + "前需要验证管理口令。\n使用鼠标或物理键盘输入。" : initialize ? "设置独立管理口令（8～128 个字符）。\n解除限制、退出和卸载时需要使用。" : uninstall ? "卸载前需要验证管理口令。\n恢复触摸前请移开屏幕上的手指。" : allowBluetoothSettings ? "取消蓝牙设置限制前需要验证管理口令。\n使用鼠标或物理键盘输入管理口令。" : "恢复触摸前请移开屏幕上的手指。\n使用鼠标或物理键盘输入管理口令。", AutoSize = true, Margin = new Padding(0, 0, 0, 14) });
         if (!initialize) { layout.Controls.Add(new Label { Text = change ? "当前管理口令" : "管理口令", AutoSize = true }); layout.Controls.Add(current); }
         if (initialize || change)
         {
