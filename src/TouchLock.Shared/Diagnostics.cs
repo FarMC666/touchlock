@@ -17,7 +17,7 @@ public static class Diagnostics
         Paths.NoLinks(directory);
         Directory.CreateDirectory(directory);
         WindowsSecurity.ProtectDirectory(directory, false);
-        Write("startup", new { Windows = Environment.OSVersion.VersionString, Version, Administrator = WindowsSecurity.Elevated, System = WindowsIdentity.GetCurrent().IsSystem, Process = Process.GetCurrentProcess().ProcessName });
+        Write("startup", new { Windows = Environment.OSVersion.VersionString, Edition = WindowsSettingsPolicy.Edition, Version, Administrator = WindowsSecurity.Elevated, System = WindowsIdentity.GetCurrent().IsSystem, Process = Process.GetCurrentProcess().ProcessName });
     }
     public static void Write(string eventName, object details)
     {

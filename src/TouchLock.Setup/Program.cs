@@ -108,17 +108,32 @@ internal sealed class SetupForm : AdaptiveForm
             using var chooser = new FolderBrowserDialog { Description = "选择存放 TouchLock 的上级文件夹", UseDescriptionForTitle = true, SelectedPath = Path.GetPathRoot(location.Text) ?? InstallationDirectory.Default };
             if (chooser.ShowDialog(this) == DialogResult.OK) location.Text = Path.Combine(chooser.SelectedPath, "TouchLock");
         };
-        install.Enabled = !installed; reset.Enabled = uninstall.Enabled = Installer.CurrentInstallation;
+        install.Enabled = !installed;
+        reset.Enabled = Installer.CurrentInstallation || !installed && Installer.HasRetainedPassword(location.Text);
+        uninstall.Enabled = Installer.CurrentInstallation;
+        location.TextChanged += (_, _) => { if (!installed) { try { reset.Enabled = Installer.HasRetainedPassword(location.Text); } catch { reset.Enabled = false; } } };
         if (installed && !Installer.CurrentInstallation) layout.Controls.Add(new Label { AutoSize = true, Text = "检测到旧版或不完整安装，请先使用原安装程序卸载。" });
         install.Click += (_, _) => Execute(() =>
         {
             string selected = InstallationDirectory.ValidateNew(location.Text);
-            using var dialog = new PasswordDialog(initialize: true);
+            bool retained = Installer.HasRetainedPassword(selected);
+            using var dialog = new PasswordDialog(initialize: !retained, actionText: retained ? "验证保留的管理口令" : null);
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
-            Installer.Install(dialog.NewPassword, selected); MessageBox.Show(this, "安装完成。TouchLock 已进入系统托盘。", "TouchLock"); Close();
+            Installer.Install(retained ? dialog.Password : dialog.NewPassword, selected); MessageBox.Show(this, "安装完成。TouchLock 已进入系统托盘。", "TouchLock"); Close();
         });
         reset.Click += (_, _) => Execute(() =>
         {
+            if (!installed)
+            {
+                string selected = InstallationDirectory.ValidateNew(location.Text);
+                using var retainedDialog = new PasswordDialog(initialize: true);
+                if (retainedDialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    Installer.ResetRetained(selected, retainedDialog.NewPassword);
+                    MessageBox.Show(this, "保留的管理口令已重置，可使用新口令安装。", "TouchLock");
+                }
+                return;
+            }
             // Recover first, even if the password dialog is later cancelled.
             Installer.StopAndRestore();
             using var dialog = new PasswordDialog(initialize: true);

@@ -27,11 +27,15 @@ internal static class Installer
         using var zip = new ZipArchive(payload, ZipArchiveMode.Read);
         foreach (var entry in zip.Entries)
             if (entry.FullName.Contains("..", StringComparison.Ordinal) || Path.IsPathRooted(entry.FullName) || entry.FullName.Contains(':')) throw new InvalidDataException();
-        Paths.PrepareData();
-        WindowsSecurity.WithDeviceMutex(() => new DeviceTransaction(new WindowsDevices(), Paths.Journal).Restore());
-        new RestrictionsStore(Paths.Restrictions).Restore();
+        string data = PrepareStore(install);
         // Compute and validate before creating a partially installed service.
-        var record = PasswordStore.Derive(password);
+        string passwordPath = Path.Combine(data, "password.json");
+        PasswordRecord? record = null;
+        if (File.Exists(passwordPath))
+        {
+            if (!new PasswordStore(passwordPath).Verify(password)) throw new UnauthorizedAccessException("检测到保留的管理口令，请使用原口令安装；忘记口令可先使用管理员重置入口。");
+        }
+        else record = PasswordStore.Derive(password);
         InstallationDirectory.Prepare(install);
         bool created = false;
         try
@@ -46,11 +50,13 @@ internal static class Installer
             File.Copy(Environment.ProcessPath!, Path.Combine(install, "TouchLock.Setup.exe"));
             using var key = Registry.LocalMachine.CreateSubKey(RegistryPath);
             key.SetValue("InstallLocation", install); // Maintenance must locate this installation even after a failed start.
+            key.SetValue("DataLocation", data); key.SetValue("DataLayoutVersion", 2);
             Sc("create", "TouchLock", "binPath=", '"' + Path.Combine(install, "TouchLock.Service.exe") + '"', "start=", "demand", "DisplayName=", "TouchLock"); created = true;
             Sc("description", "TouchLock", "TouchLock 临时触摸锁定及故障恢复服务");
             Sc("sdset", "TouchLock", "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;CCLCRP;;;IU)");
             Sc("failure", "TouchLock", "reset=", "86400", "actions=", "restart/10000/restart/10000/restart/60000");
-            AtomicFile.Write(Paths.Password, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(record)); WindowsSecurity.ProtectFile(Paths.Password);
+            if (record != null) AtomicFile.Write(Paths.Password, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(record));
+            WindowsSecurity.ProtectFile(Paths.Password);
             key.SetValue("DisplayName", "TouchLock"); key.SetValue("DisplayVersion", "1.0.0"); key.SetValue("Publisher", "TouchLock");
             key.SetValue("DisplayIcon", Path.Combine(install, "TouchLock.exe"));
             key.SetValue("UninstallString", '"' + Path.Combine(install, "TouchLock.Setup.exe") + "\" --maintenance");
@@ -64,6 +70,33 @@ internal static class Installer
             if (Directory.Exists(install)) Directory.Delete(install, true);
             throw;
         }
+    }
+    public static bool HasRetainedPassword(string install) => File.Exists(Path.Combine(Paths.SelectDataDirectory(install), "password.json")) || File.Exists(Path.Combine(Paths.LegacyData, "password.json"));
+    private static string PrepareStore(string install)
+    {
+        string data = Paths.SelectDataDirectory(install);
+        void Recover(string root)
+        {
+            Paths.PrepareData(root);
+            WindowsSecurity.WithDeviceMutex(() => new DeviceTransaction(new WindowsDevices(), Path.Combine(root, "recovery.json")).Restore());
+            new RestrictionsStore(Path.Combine(root, "restrictions.json")).Restore();
+        }
+        if (Directory.Exists(Paths.LegacyData) && !data.Equals(Paths.LegacyData, StringComparison.OrdinalIgnoreCase)) Recover(Paths.LegacyData);
+        Recover(data);
+        DataMigration.CopyPassword(Paths.LegacyData, data);
+        Paths.PrepareData(data);
+        return data;
+    }
+    public static void ResetRetained(string install, ReadOnlySpan<byte> password)
+    {
+        RequireAdmin();
+        if (Services.Exists() || InstallationDirectory.Registered) throw new IOException("已有安装，请使用当前安装的口令重置入口。");
+        install = InstallationDirectory.ValidateNew(install);
+        if (!HasRetainedPassword(install)) throw new IOException("未找到可重置的保留口令。");
+        var record = PasswordStore.Derive(password);
+        string data = PrepareStore(install);
+        AtomicFile.Write(Path.Combine(data, "password.json"), System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(record));
+        WindowsSecurity.ProtectFile(Path.Combine(data, "password.json"));
     }
     private static void AddShortcut()
     {
@@ -106,7 +139,7 @@ internal static class Installer
         if (!verified) throw new UnauthorizedAccessException("管理口令不正确，未卸载 TouchLock。");
         // Authentication must precede every operation that stops the service or restores touch.
         StopAndRestore();
-        string install = Paths.Install;
+        string install = Paths.Install, data = Paths.Data;
         foreach (var p in Process.GetProcessesByName("TouchLock"))
         {
             using (p)
@@ -123,8 +156,19 @@ internal static class Installer
         if (Directory.Exists(install)) Directory.Delete(install, true);
         if (deleteConfiguration)
         {
-            foreach (string name in new[] { "password.json", "recovery.json", "restrictions.json" }) { string path = Path.Combine(Paths.Data, name); if (File.Exists(path)) File.Delete(path); }
-            if (Directory.Exists(Paths.Data) && !Directory.EnumerateFileSystemEntries(Paths.Data).Any()) Directory.Delete(Paths.Data);
+            foreach (string name in new[] { "password.json", "recovery.json", "restrictions.json", "migration-v2.json" }) { string path = Path.Combine(data, name); if (File.Exists(path)) File.Delete(path); }
+            string logs = Path.Combine(data, "Logs"); Paths.NoLinks(logs);
+            if (Directory.Exists(logs))
+            {
+                foreach (string process in new[] { "TouchLock", "TouchLock.Service", "TouchLock.Recovery", "TouchLock.Setup" })
+                    for (int index = 0; index <= 4; index++)
+                    {
+                        string file = Path.Combine(logs, process + ".jsonl" + (index == 0 ? "" : "." + index));
+                        Paths.NoLinks(file); if (File.Exists(file)) File.Delete(file);
+                    }
+                if (!Directory.EnumerateFileSystemEntries(logs).Any()) Directory.Delete(logs);
+            }
+            if (Directory.Exists(data) && !Directory.EnumerateFileSystemEntries(data).Any()) Directory.Delete(data);
         }
     }
 }

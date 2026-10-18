@@ -6,7 +6,7 @@ App 使用 Windows Desktop 自带的 UI Automation 组件。App、Service、Reco
 
 | 项目 | 职责 |
 | --- | --- |
-| App | 当前交互会话的托盘、单向全局快捷键、口令输入、蓝牙设置页面监控、About |
+| App | 当前交互会话的托盘、受保护切换快捷键、口令输入、蓝牙设置页面监控、About |
 | Service | LocalSystem；唯一状态源、设备事务、口令验证、恢复监督 |
 | Recovery | 独立 SYSTEM 进程；持有确切服务句柄，失联后终止旧服务并恢复 |
 | Shared | V2 IPC、PBKDF2、受保护目录/互斥量、SetupAPI/Configuration Manager 后端 |
@@ -15,7 +15,9 @@ App 使用 Windows Desktop 自带的 UI Automation 组件。App、Service、Reco
 
 ## 安装位置
 
-默认位置为 `%ProgramFiles%\TouchLock`，首次安装可选择本地 NTFS 固定磁盘中的新目录。规范化与权限校验拒绝网络路径、系统目录、设备名称、链接和普通用户可替换的上级目录；新目录以 Administrators 所有者和受保护 ACL 原子创建，不更改已有父目录。HKLM 卸载项的 `InstallLocation` 保存实际位置，服务命令行、快捷方式和维护使用该位置；卸载先保存位置再删除注册项，避免误回退到默认目录。密码与恢复记录继续位于 ProgramData。
+默认位置为 `%ProgramFiles%\TouchLock`，首次安装可选择本地 NTFS 固定盘的新目录。拒绝网络路径、系统目录、链接和可被普通用户替换的上级目录；新目录以 Administrators 所有者和受保护 ACL 原子创建，不改已有父目录。
+
+数据布局版本 2：按安装盘选择 ProgramData/TouchLock，若父目录不安全则选同盘 TouchLockData；发现两处都有口令时拒绝覆盖。HKLM 卸载项保存 InstallLocation、DataLocation、DataLayoutVersion；读取时验证数据仍在允许的同盘位置，不回退用户目录或其他盘。无版本标记的旧安装仍从旧 ProgramData 维护。迁移前恢复旧设备与策略，验证口令文件，原子复制并保留原文件；迁移标记防止冰点恢复的旧文件覆盖新口令。默认卸载保留数据，卸载先缓存两个路径再移除注册项。
 
 ## 设备事务
 
@@ -31,7 +33,7 @@ SetupAPI 枚举当前存在的全部设备类。`DeviceSelection` 优先精确�
 
 口令通过有长度上限的二进制帧传输，与 JSON 控制消息分离。口令输入读取原生编辑控件到临时字符数组；控件、字符数组及字节数组使用后清除，不创建业务口令 string。无法保证消除 Windows 控件或操作系统内部所有历史副本。
 
-PBKDF2-HMAC-SHA256：600,000 迭代、16 字节随机盐、32 字节哈希，恒定时间比较。记录含固定版本与算法参数，位于 `%ProgramData%\TouchLock\password.json`，SYSTEM/Admin ACL，禁止链接路径。错误五次后全局暂停 30 秒。初始设置和忘记口令重置由提升权限 Setup 执行；复位先停止服务并恢复设备。
+PBKDF2-HMAC-SHA256：600,000 迭代、16 字节随机盐、32 字节哈希，恒定时间比较。记录含固定版本与算法参数，位于实际 DataLocation 下的 password.json，SYSTEM/Admin ACL，禁止链接路径。错误五次后全局暂停 30 秒。初始设置和忘记口令重置由提升权限 Setup 执行；复位先停止服务并恢复设备。
 
 Setup 卸载须提供当前管理口令，并在停止服务、恢复设备或删除文件前直接验证受保护的口令记录；错误、取消或配置损坏不执行卸载。密码缓冲区在对话框或测试入口结束后清除。管理员忘记口令的重置恢复入口保留，不能将 Windows 提升权限直接当作卸载口令验证成功。
 

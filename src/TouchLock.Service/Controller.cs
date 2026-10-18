@@ -128,7 +128,13 @@ internal sealed class Controller : IDisposable
     {
         Paths.PrepareData();
         Diagnostics.Initialize(Paths.Data);
-        Diagnostics.Write("device-inventory", WindowsDevices.Inventory());
+        try
+        {
+            var inventory = WindowsDevices.Inventory();
+            Diagnostics.Write("device-inventory", inventory.Select(n => new { Device = n, KumaMatch = DeviceSelection.IsKuma(n) }));
+            Diagnostics.Write("device-targets", backend.Enumerate());
+        }
+        catch (Exception e) { Diagnostics.Write("device-inventory-failed", new { Error = e.Message }); }
         try { WindowsSecurity.WithDeviceMutex(devices.Restore); } catch (Exception e) { reason = e.Message; Transition(LockState.Restoring); }
         try { observed = backend.Enumerate(); deviceError = ""; } catch (Exception e) { deviceError = e.Message; }
         try
@@ -261,7 +267,7 @@ internal sealed class Controller : IDisposable
         }
         if (command.Operation == "begin")
         {
-            if (operationRunning && !backgroundInspect || state is not (LockState.Unlocked or LockState.Locked)) return Reply(false, "已有认证或设备操作正在进行。");
+            if (operationRunning || state is not (LockState.Unlocked or LockState.Locked)) return Reply(false, "已有认证或设备操作正在进行。");
             if (!Enum.IsDefined(command.Intent) || command.Intent == AuthenticationIntent.Unlock && state != LockState.Locked) return Reply(false, "触摸尚未锁定。");
             if (command.Intent == AuthenticationIntent.AllowBluetoothSettings && !bluetoothSettingsBlocked) return Reply(false, "当前未禁止进入 Windows 蓝牙设置。");
             if (Now < cooldown) return Reply(false, "错误尝试过多，请等待 30 秒再试。");

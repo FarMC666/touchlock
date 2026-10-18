@@ -4,11 +4,40 @@ using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
+using Microsoft.Win32;
 namespace TouchLock.Shared;
 
 public static class Paths
 {
-    public static string Data => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "TouchLock");
+    public static string LegacyData => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "TouchLock");
+    public static string DataForInstallation(string install) => Path.Combine(Path.GetPathRoot(Path.GetFullPath(install)) ?? throw new IOException("安装盘无效。"), "ProgramData", "TouchLock");
+    public static string AlternateDataForInstallation(string install) => Path.Combine(Path.GetPathRoot(Path.GetFullPath(install)) ?? throw new IOException("安装盘无效。"), "TouchLockData");
+    public static string SelectDataDirectory(string install)
+    {
+        string[] candidates = [DataForInstallation(install), AlternateDataForInstallation(install)];
+        var existing = candidates.Where(path => File.Exists(Path.Combine(path, "password.json"))).ToArray();
+        if (existing.Length > 1) throw new IOException("同盘存在多个口令目录，未覆盖任何数据。请管理员核对后安装。");
+        if (existing.Length == 1) { InstallationDirectory.ValidateProtectedAncestors(existing[0], includeSelf: true); return existing[0]; }
+        foreach (string candidate in candidates)
+        {
+            try { InstallationDirectory.ValidateProtectedAncestors(candidate, includeSelf: true); return candidate; }
+            catch (IOException) { }
+        }
+        throw new IOException("安装盘上没有安全的应用数据目录；不会修改其他目录权限或回退到系统盘。");
+    }
+    public static string Data
+    {
+        get
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(InstallationDirectory.RegistryPath);
+            if (key != null && key.GetValue("DataLayoutVersion") == null) return LegacyData; // Maintenance of an older installation.
+            string expected = DataForInstallation(Install);
+            if (key != null && (key.GetValue("DataLayoutVersion") is not int version || version != 2 ||
+                key.GetValue("DataLocation") is not string location || !(expected.Equals(location, StringComparison.OrdinalIgnoreCase) || AlternateDataForInstallation(Install).Equals(location, StringComparison.OrdinalIgnoreCase))))
+                throw new IOException("应用数据位置记录无效，未回退到其他盘。请使用安装程序维护。");
+            return key?.GetValue("DataLocation") as string ?? expected;
+        }
+    }
     public static string Install => InstallationDirectory.Installed;
     public static string Password => Path.Combine(Data, "password.json");
     public static string Journal => Path.Combine(Data, "recovery.json");
@@ -18,11 +47,15 @@ public static class Paths
         for (var d = new DirectoryInfo(path); d != null; d = d.Parent)
             if (d.Exists && (d.Attributes & FileAttributes.ReparsePoint) != 0) throw new IOException("安装或配置路径不能包含链接。");
     }
-    public static void PrepareData()
+    public static void PrepareData(string? selectedDirectory = null)
     {
-        NoLinks(Data); Directory.CreateDirectory(Data);
-        WindowsSecurity.ProtectDirectory(Data, false);
-        foreach (string file in Directory.GetFiles(Data))
+        string data = selectedDirectory ?? Data;
+        NoLinks(data); InstallationDirectory.ValidateProtectedAncestors(data, includeSelf: true);
+        var missing = new Stack<DirectoryInfo>();
+        for (var current = new DirectoryInfo(data); !current.Exists; current = current.Parent ?? throw new IOException()) missing.Push(current);
+        foreach (var current in missing) WindowsSecurity.CreateInstallationDirectory(current.FullName, usersRead: false);
+        WindowsSecurity.ProtectDirectory(data, false);
+        foreach (string file in Directory.GetFiles(data))
         {
             if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0) throw new IOException("配置路径包含链接。");
             WindowsSecurity.ProtectFile(file);
@@ -40,9 +73,9 @@ public static class WindowsSecurity
     [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)] private static extern SafePipeHandle CreateNamedPipeW(string name, uint open, uint mode, uint instances, uint output, uint input, uint timeout, ref Attributes security);
     [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)] private static extern SafeWaitHandle CreateMutexW(ref Attributes security, bool owned, string name);
     [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool CreateDirectoryW(string path, ref Attributes security);
-    public static void CreateInstallationDirectory(string path)
+    public static void CreateInstallationDirectory(string path, bool usersRead = true)
     {
-        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW("O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)", 1, out nint sd, out _)) throw new Win32Exception();
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW("O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" + (usersRead ? "(A;OICI;0x1200a9;;;BU)" : ""), 1, out nint sd, out _)) throw new Win32Exception();
         try
         {
             var attributes = new Attributes { Size = Marshal.SizeOf<Attributes>(), Descriptor = sd };
