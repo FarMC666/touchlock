@@ -256,6 +256,7 @@ internal sealed class Controller : IDisposable
             if (command.Intent == AuthenticationIntent.AllowBluetoothSettings && !bluetoothSettingsBlocked) return Reply(false, "当前未禁止进入 Windows 蓝牙设置。");
             if (Now < cooldown) return Reply(false, "错误尝试过多，请等待 30 秒再试。");
             origin = state; intent = command.Intent; owner = client; requestId = Guid.NewGuid(); deadline = Now + 180000;
+            Diagnostics.Write("authentication-started", new { Intent = intent.ToString() });
             Transition(LockState.Authenticating); return Reply(true, id: requestId);
         }
         if (command.Operation == "cancel" && command.RequestId == requestId && owner == client) { Cancel(); return Reply(true); }
@@ -275,15 +276,18 @@ internal sealed class Controller : IDisposable
     }
     private ControlReply AuthenticateCore(ControlRequest command, ClientIdentity client, byte[] password, byte[] replacement)
     {
-        if (command.Operation != "submit" || state != LockState.Authenticating || command.RequestId == Guid.Empty || command.RequestId != requestId || owner != client || Now >= deadline) return Reply(false, "认证已过期，请重新打开认证窗口。");
+        if (command.Operation != "submit" || state != LockState.Authenticating || command.RequestId == Guid.Empty || command.RequestId != requestId || owner != client) return Reply(false, "认证已过期，请重新打开认证窗口。");
+        if (Now >= deadline) { Cancel(); return Reply(false, "认证已过期，请重新打开认证窗口。"); }
         try
         {
             if (Now < cooldown || !passwords.Verify(password))
             {
                 failures++; if (failures >= 5) { cooldown = Now + 30000; failures = 0; }
+                Diagnostics.Write("authentication-rejected", new { Intent = intent.ToString(), CoolingDown = Now < cooldown });
                 Cancel(); return Reply(false, Now < cooldown ? "错误尝试过多，请等待 30 秒再试。" : "管理口令不正确。");
             }
             failures = 0;
+            Diagnostics.Write("authentication-accepted", new { Intent = intent.ToString() });
             if (intent == AuthenticationIntent.ChangePassword)
             {
                 passwords.Set(replacement); Cancel(); return Reply(true);
@@ -295,7 +299,7 @@ internal sealed class Controller : IDisposable
             var action = intent; Cancel(); exitRequested = action == AuthenticationIntent.Exit; Restore();
             return Reply(true);
         }
-        catch { Cancel(); return Reply(false, "口令配置读写失败，请通过安装程序维护。"); }
+        catch { Cancel(); return Reply(false, "敏感操作未完成，原限制和恢复记录已保留。请检查配置权限或通过安装程序维护。"); }
     }
     public void Dispose() { lease?.Dispose(); guard?.Dispose(); }
 }
