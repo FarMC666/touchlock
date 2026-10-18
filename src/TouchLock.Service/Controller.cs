@@ -10,6 +10,7 @@ internal sealed class Controller : IDisposable
     private readonly PasswordStore passwords;
     private readonly IDeviceBackend backend;
     private readonly RestrictionsStore restrictions;
+    private readonly IStartupConfiguration startup;
     private bool bluetoothSettingsBlocked;
     private string bluetoothSettingsError = "";
     private LockState state = LockState.Unlocked, origin;
@@ -22,15 +23,27 @@ internal sealed class Controller : IDisposable
     private ClientIdentity? owner;
     private Process? guard;
     private NamedPipeServerStream? lease;
+    private IReadOnlyList<TouchDevice> observed = [];
+    private string deviceError = "正在检测触摸设备。", operationError = "";
+    private Task? deviceTask;
+    private bool operationRunning, restoreRequested, exitRequested, backgroundInspect;
+    private Guid operationId;
+    private long progressAt, stopAt;
+    private readonly Func<bool>? recoveryHealthy;
+    private readonly Action<Action> withDeviceMutex;
     public Controller() : this(new WindowsDevices(), Paths.Password, Paths.Journal, Paths.Restrictions) { }
-    internal Controller(IDeviceBackend backend, string passwordPath, string journalPath, string restrictionsPath)
+    internal Controller(IDeviceBackend backend, string passwordPath, string journalPath, string restrictionsPath, Func<bool>? recoveryHealthy = null, Action<Action>? withDeviceMutex = null, ISettingsPolicy? settingsPolicy = null, IStartupConfiguration? startupConfiguration = null)
     {
-        this.backend = backend; devices = new(backend, journalPath); passwords = new(passwordPath); restrictions = new(restrictionsPath);
-        try { bluetoothSettingsBlocked = restrictions.Read(); }
-        catch { bluetoothSettingsBlocked = true; bluetoothSettingsError = "蓝牙设置限制配置读取失败，已保持限制；可输入管理口令取消限制后重新设置。"; }
+        this.backend = backend; devices = new(backend, journalPath); passwords = new(passwordPath); restrictions = new(restrictionsPath, settingsPolicy);
+        this.recoveryHealthy = recoveryHealthy;
+        startup = startupConfiguration ?? new WindowsStartupConfiguration();
+        this.withDeviceMutex = withDeviceMutex ?? WindowsSecurity.WithDeviceMutex;
+        devices.Progress = () => Interlocked.Exchange(ref progressAt, Now);
+        try { restrictions.Restore(); }
+        catch (Exception e) { bluetoothSettingsBlocked = true; bluetoothSettingsError = e.Message; }
     }
     public void SessionChanged() => Interlocked.Exchange(ref sessionChange, 1);
-    private bool GuardHealthy => !guardFailed && guard is { HasExited: false } && lease is { IsConnected: true };
+    private bool GuardHealthy => recoveryHealthy?.Invoke() ?? (!guardFailed && guard is { HasExited: false } && lease is { IsConnected: true });
     private static long Now => Environment.TickCount64;
     private void Transition(LockState next) { state = next; generation++; }
     private void Cancel() { requestId = Guid.Empty; owner = null; if (state == LockState.Authenticating) Transition(origin); }
@@ -41,8 +54,9 @@ internal sealed class Controller : IDisposable
         {
             passwords.Read();
             if (devices.Pending && state is not (LockState.Locked or LockState.Authenticating)) return "正在恢复触摸设备。";
-            var found = backend.Enumerate();
-            if (found.Count == 0) return "未找到标准 HID 触摸屏。";
+            if (deviceError.Length > 0) return deviceError;
+            var found = observed;
+            if (found.Count == 0) return "未找到可操作的 Kuma 或标准 HID 触摸屏。";
             if (found.Any(d => !d.Safe)) return found.First(d => !d.Safe).Reason;
             if (state is LockState.Unlocked or LockState.Unavailable && !found.Any(d => !d.Disabled && d.Disableable)) return "没有可以临时锁定的触摸屏。";
             return "";
@@ -51,14 +65,78 @@ internal sealed class Controller : IDisposable
     }
     private Status Status()
     {
-        string unavailable = reason.Length > 0 ? reason : Availability();
+        string unavailable = Availability();
         var shown = state == LockState.Unlocked && unavailable.Length > 0 ? LockState.Unavailable : state;
-        return new(shown, generation, unavailable.Length == 0, unavailable, stop, bluetoothSettingsBlocked, bluetoothSettingsError);
+        bool startupEnabled = false; string startupError = "";
+        try { startupEnabled = startup.Read(); } catch (Exception e) { startupError = "无法确认开机自启动：" + e.Message; }
+        return new(shown, generation, unavailable.Length == 0 && !operationRunning, Display(reason.Length > 0 ? reason : unavailable), stop, bluetoothSettingsBlocked, Display(bluetoothSettingsError, 512),
+            observed.Count, observed.Count(d => d.Disabled), operationId, operationRunning && !backgroundInspect, Display(operationError), devices.Summary, Display(Diagnostics.Error, 512), startupEnabled, Display(startupError, 512));
+    }
+    // The gate protects state only, never a potentially slow device API. One worker owns all device I/O.
+    private void StartDeviceOperation(string action, bool background = false)
+    {
+        if (operationRunning) return;
+        if (!background) { operationId = Guid.NewGuid(); operationError = ""; }
+        operationRunning = true; backgroundInspect = background; progressAt = Now;
+        if (action == "lock") Transition(LockState.Locking);
+        if (action == "restore") { restoreRequested = false; Transition(LockState.Restoring); }
+        deviceTask = Task.Run(() =>
+        {
+            string error = "", queryError = ""; IReadOnlyList<TouchDevice> next = observed;
+            try
+            {
+                withDeviceMutex(() =>
+                {
+                    if (action == "lock") devices.Lock();
+                    else if (action == "restore") devices.Restore();
+                });
+            }
+            catch (Exception e) { error = e.Message; }
+            try { next = backend.Enumerate(); } catch (Exception e) { queryError = e.Message; }
+            lock (gate)
+            {
+                observed = next; deviceError = queryError; operationRunning = false;
+                if (!background) operationError = error.Length > 0 ? error : queryError;
+                if (action is "lock" or "restore")
+                {
+                    reason = error;
+                    if (devices.Pending)
+                    {
+                        if (action == "lock" && error.Length == 0 && queryError.Length == 0 && next.Count > 0 && next.All(d => d.Disabled && d.Safe))
+                        { fingerprint = Fingerprint(next); Transition(LockState.Locked); }
+                        else { restoreRequested = true; Transition(LockState.Restoring); }
+                    }
+                    else Transition(LockState.Unlocked);
+                }
+                if (exitRequested && !devices.Pending && error.Length == 0)
+                { stop = true; stopAt = Now + 3000; Transition(LockState.Stopping); }
+                else if (exitRequested && error.Length > 0) exitRequested = false;
+                generation++;
+                Diagnostics.Write("device-operation-complete", new { Action = action, operationId, Error = error, QueryError = queryError, Count = next.Count, Disabled = next.Count(d => d.Disabled) });
+            }
+        });
+    }
+    private async Task Pulse()
+    {
+        // Do not renew a worker that has stopped making progress. The guardian must still rescue a hung API.
+        if (!GuardHealthy || operationRunning && Now - Interlocked.Read(ref progressAt) > 15000) return;
+        using var write = new CancellationTokenSource(2000);
+        try { await lease!.WriteAsync(new byte[] { 1 }, write.Token); await lease.FlushAsync(write.Token); }
+        catch { guardFailed = true; }
     }
     public async Task Run(CancellationToken shutdown)
     {
         Paths.PrepareData();
+        Diagnostics.Initialize(Paths.Data);
+        try
+        {
+            var inventory = WindowsDevices.Inventory();
+            Diagnostics.Write("device-inventory", inventory.Select(n => new { Device = n, KumaMatch = DeviceSelection.IsKuma(n) }));
+            Diagnostics.Write("device-targets", backend.Enumerate());
+        }
+        catch (Exception e) { Diagnostics.Write("device-inventory-failed", new { Error = e.Message }); }
         try { WindowsSecurity.WithDeviceMutex(devices.Restore); } catch (Exception e) { reason = e.Message; Transition(LockState.Restoring); }
+        try { observed = backend.Enumerate(); deviceError = ""; } catch (Exception e) { deviceError = e.Message; }
         try
         {
             string pipeName = "TouchLock.Guard.v2." + Guid.NewGuid().ToString("N");
@@ -75,38 +153,42 @@ internal sealed class Controller : IDisposable
         Task control = Listen(false, io.Token), authentication = Listen(true, io.Token);
         try
         {
-            while (!shutdown.IsCancellationRequested && !stop)
+            while (!shutdown.IsCancellationRequested && (!stop || Now < stopAt))
             {
                 lock (gate)
                 {
+                    if (bluetoothSettingsBlocked)
+                    {
+                        try { bluetoothSettingsError = restrictions.ValidationError(); }
+                        catch (Exception e) { bluetoothSettingsError = "蓝牙保护状态检查失败：" + e.Message; }
+                    }
                     if (!GuardHealthy) { guardFailed = true; Cancel(); Restore(); reason = "触摸恢复进程异常，已停止锁定功能。"; }
                     if (Interlocked.Exchange(ref sessionChange, 0) != 0) { Cancel(); Restore(); }
-                    if (state == LockState.Restoring) Restore();
+                    if (!operationRunning && (state == LockState.Restoring || restoreRequested)) Restore();
                     if (state == LockState.Authenticating && (Now >= deadline || !OwnerAlive())) Cancel();
-                    if (devices.Pending && state is LockState.Locked or LockState.Authenticating)
+                    if (!operationRunning && devices.Pending && state is LockState.Locked or LockState.Authenticating)
                     {
-                        try { if (DeviceFingerprint() != fingerprint || backend.Enumerate().Any(d => !d.Safe) || devices.ReadJournal().Any(id => !backend.IsDisabled(id))) { Cancel(); Restore(); } }
+                        try { if (Fingerprint(observed) != fingerprint || observed.Any(d => !d.Safe) || devices.ReadJournal().Any(id => !observed.Any(d => d.Id.Equals(id, StringComparison.OrdinalIgnoreCase) && d.Disabled))) { Cancel(); Restore(); } }
                         catch { Cancel(); Restore(); }
                     }
-                    if (Now - lastTray > 10000) { lastTray = Now; try { Native.StartTray(); } catch { } }
+                    if (!operationRunning && !stop && state != LockState.Authenticating) StartDeviceOperation("inspect", background: true);
+                    if (!stop && Now - lastTray > 10000) { lastTray = Now; try { Native.StartTray(); } catch { } }
                 }
-                if (GuardHealthy)
-                {
-                    using var write = new CancellationTokenSource(2000);
-                    try { await lease!.WriteAsync(new byte[] { 1 }, write.Token); await lease.FlushAsync(write.Token); }
-                    catch { guardFailed = true; }
-                }
+                await Pulse();
                 await Task.Delay(1000, shutdown);
             }
         }
         catch (OperationCanceledException) { }
         finally
         {
+            if (deviceTask != null) while (!deviceTask.IsCompleted) { await Pulse(); await Task.WhenAny(deviceTask, Task.Delay(500)); }
             lock (gate) { Cancel(); Restore(); }
+            if (deviceTask != null) while (!deviceTask.IsCompleted) { await Pulse(); await Task.WhenAny(deviceTask, Task.Delay(500)); }
             io.Cancel();
             try { await Task.WhenAll(control, authentication); } catch { }
+            try { restrictions.Restore(); } catch (Exception e) { Diagnostics.Write("bluetooth-policy-restore-failed", new { Error = e.Message }); }
             // If restore failed, leave the guardian alive to retry; never erase its journal.
-            if (!devices.Pending && GuardHealthy)
+            if (!devices.Pending && !restrictions.Pending && GuardHealthy)
             {
                 try { await lease!.WriteAsync(new byte[] { 2 }); await lease.FlushAsync(); } catch { }
                 try { if (guard != null) await guard.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
@@ -118,13 +200,11 @@ internal sealed class Controller : IDisposable
         if (owner == null || owner.Session != WindowsSecurity.WTSGetActiveConsoleSessionId()) return false;
         return WindowsSecurity.SameLiveProcess(owner);
     }
-    private string DeviceFingerprint() => string.Join('\n', backend.Enumerate().Select(d => d.Id).Order(StringComparer.OrdinalIgnoreCase));
+    private static string Fingerprint(IReadOnlyList<TouchDevice> devices) => string.Join('\n', devices.Select(d => d.Id).Order(StringComparer.OrdinalIgnoreCase));
     private void Restore()
     {
-        if (!devices.Pending) { if (state == LockState.Restoring) { reason = ""; Transition(LockState.Unlocked); } return; }
-        Transition(LockState.Restoring);
-        try { WindowsSecurity.WithDeviceMutex(devices.Restore); reason = ""; Transition(LockState.Unlocked); }
-        catch (Exception e) { reason = e.Message; }
+        restoreRequested = true;
+        if (!operationRunning) StartDeviceOperation("restore");
     }
     private async Task Listen(bool binary, CancellationToken shutdown)
     {
@@ -156,13 +236,24 @@ internal sealed class Controller : IDisposable
             catch { /* Invalid/disconnected clients receive no authority or success response. */ }
         }
     }
-    private ControlReply Reply(bool success, string error = "", Guid id = default) => new(success, Status(), error, id);
+    private static string Display(string text, int maximum = 2048) => text.Length <= maximum ? text : text[..maximum] + "…（完整信息见诊断日志）";
+    private ControlReply Reply(bool success, string error = "", Guid id = default) => new(success, Status(), Display(error), id);
     internal ControlReply Command(ControlRequest command, ClientIdentity client)
+    {
+        lock (gate) return CommandCore(command, client);
+    }
+    private ControlReply CommandCore(ControlRequest command, ClientIdentity client)
     {
 #if DEBUG
         if (command.Operation == "test-pause") { Thread.Sleep(35000); return Reply(false); }
 #endif
         if (command.Operation == "status") { lastTray = Now; return Reply(true); }
+        if (stop) return Reply(false, "TouchLock 正在退出。");
+        if (command.Operation == "refresh")
+        {
+            if (operationRunning) return Reply(false, "设备操作正在进行。");
+            StartDeviceOperation("inspect"); return Reply(true);
+        }
         if (command.Operation == "block-bluetooth-settings")
         {
             if (stop) return Reply(false, "TouchLock 正在退出。");
@@ -170,20 +261,19 @@ internal sealed class Controller : IDisposable
         }
         if (command.Operation == "lock")
         {
-            if (state is LockState.Locked or LockState.Authenticating) return Reply(true);
+            if (operationRunning || state is LockState.Locked or LockState.Authenticating) return Reply(false, "已有锁定、认证或设备操作正在进行。");
             string unavailable = Availability(); if (unavailable.Length > 0) return Reply(false, unavailable);
             if (state != LockState.Unlocked) return Reply(false, "设备正在恢复。");
-            Transition(LockState.Locking);
-            try { WindowsSecurity.WithDeviceMutex(devices.Lock); fingerprint = DeviceFingerprint(); reason = ""; Transition(LockState.Locked); return Reply(true); }
-            catch (Exception e) { reason = e.Message; Transition(devices.Pending ? LockState.Restoring : LockState.Unlocked); return Reply(false, reason); }
+            StartDeviceOperation("lock"); return Reply(true);
         }
         if (command.Operation == "begin")
         {
-            if (state is not (LockState.Unlocked or LockState.Locked)) return Reply(false, "已有认证或设备操作正在进行。");
+            if (operationRunning || state is not (LockState.Unlocked or LockState.Locked)) return Reply(false, "已有认证或设备操作正在进行。");
             if (!Enum.IsDefined(command.Intent) || command.Intent == AuthenticationIntent.Unlock && state != LockState.Locked) return Reply(false, "触摸尚未锁定。");
             if (command.Intent == AuthenticationIntent.AllowBluetoothSettings && !bluetoothSettingsBlocked) return Reply(false, "当前未禁止进入 Windows 蓝牙设置。");
             if (Now < cooldown) return Reply(false, "错误尝试过多，请等待 30 秒再试。");
             origin = state; intent = command.Intent; owner = client; requestId = Guid.NewGuid(); deadline = Now + 180000;
+            Diagnostics.Write("authentication-started", new { Intent = intent.ToString() });
             Transition(LockState.Authenticating); return Reply(true, id: requestId);
         }
         if (command.Operation == "cancel" && command.RequestId == requestId && owner == client) { Cancel(); return Reply(true); }
@@ -195,19 +285,37 @@ internal sealed class Controller : IDisposable
         {
             restrictions.Set(blocked); bluetoothSettingsBlocked = blocked; bluetoothSettingsError = ""; generation++; return Reply(true);
         }
-        catch { bluetoothSettingsError = "蓝牙设置限制保存失败，原设置保持不变。请稍后重试，或运行安装程序维护。"; return Reply(false, bluetoothSettingsError); }
+        catch (Exception e)
+        {
+            try { bluetoothSettingsBlocked = restrictions.Read(); } catch { bluetoothSettingsBlocked = true; }
+            bluetoothSettingsError = e.Message; return Reply(false, bluetoothSettingsError);
+        }
     }
     internal ControlReply Authenticate(ControlRequest command, ClientIdentity client, byte[] password, byte[] replacement)
     {
-        if (command.Operation != "submit" || state != LockState.Authenticating || command.RequestId == Guid.Empty || command.RequestId != requestId || owner != client || Now >= deadline) return Reply(false, "认证已过期，请重新打开认证窗口。");
+        lock (gate) return AuthenticateCore(command, client, password, replacement);
+    }
+    private ControlReply AuthenticateCore(ControlRequest command, ClientIdentity client, byte[] password, byte[] replacement)
+    {
+        if (command.Operation != "submit" || state != LockState.Authenticating || command.RequestId == Guid.Empty || command.RequestId != requestId || owner != client) return Reply(false, "认证已过期，请重新打开认证窗口。");
+        if (Now >= deadline) { Cancel(); return Reply(false, "认证已过期，请重新打开认证窗口。"); }
         try
         {
             if (Now < cooldown || !passwords.Verify(password))
             {
                 failures++; if (failures >= 5) { cooldown = Now + 30000; failures = 0; }
+                Diagnostics.Write("authentication-rejected", new { Intent = intent.ToString(), CoolingDown = Now < cooldown });
                 Cancel(); return Reply(false, Now < cooldown ? "错误尝试过多，请等待 30 秒再试。" : "管理口令不正确。");
             }
             failures = 0;
+            Diagnostics.Write("authentication-accepted", new { Intent = intent.ToString() });
+            if (intent is AuthenticationIntent.EnableStartup or AuthenticationIntent.DisableStartup)
+            {
+                bool enable = intent == AuthenticationIntent.EnableStartup;
+                Cancel();
+                try { startup.Set(enable); generation++; Diagnostics.Write("startup-setting", new { Enabled = startup.Read() }); return Reply(true); }
+                catch (Exception e) { return Reply(false, "开机自启动设置失败：" + e.Message); }
+            }
             if (intent == AuthenticationIntent.ChangePassword)
             {
                 passwords.Set(replacement); Cancel(); return Reply(true);
@@ -216,12 +324,12 @@ internal sealed class Controller : IDisposable
             {
                 Cancel(); return SetBluetoothSettingsBlocked(false);
             }
-            var action = intent; Cancel(); Restore();
-            if (devices.Pending) return Reply(false, reason);
-            if (action == AuthenticationIntent.Exit) { Transition(LockState.Stopping); stop = true; }
+            var action = intent; Cancel();
+            if (action == AuthenticationIntent.Exit) { var cleanup = SetBluetoothSettingsBlocked(false); if (!cleanup.Success) return cleanup; }
+            exitRequested = action == AuthenticationIntent.Exit; Restore();
             return Reply(true);
         }
-        catch { Cancel(); return Reply(false, "口令配置读写失败，请通过安装程序维护。"); }
+        catch { Cancel(); return Reply(false, "敏感操作未完成，原限制和恢复记录已保留。请检查配置权限或通过安装程序维护。"); }
     }
     public void Dispose() { lease?.Dispose(); guard?.Dispose(); }
 }

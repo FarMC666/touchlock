@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using TouchLock.Shared;
-if (args.SequenceEqual(["--inventory"])) { Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new WindowsDevices().Enumerate())); return; }
+if (args.SequenceEqual(["--inventory"])) { Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { Inventory = WindowsDevices.Inventory(), Targets = new WindowsDevices().Enumerate() })); return; }
 if (args.Length == 2 && args[0] == "--validate-install") { Console.WriteLine(InstallationDirectory.ValidateNew(args[1])); return; }
 int passed = 0;
 void Check(bool condition, string name) { if (!condition) throw new Exception(name); Console.WriteLine("PASS " + name); passed++; }
@@ -40,6 +40,7 @@ try
     File.WriteAllText(journal, "{bad}"); Throws(transaction.Restore, "corrupt journal never silently discarded"); File.Delete(journal);
     File.WriteAllText(journal, "{\"Version\":1,\"DeviceIds\":[\"USB\\\\parent\"]}"); Throws(transaction.Restore, "non HID recovery target rejected"); File.Delete(journal);
     fake.Disableable = false; Throws(transaction.Lock, "non-dynamic device rejected"); fake.Disableable = true;
+    DeviceTests.Run(folder, Check);
     var store = new PasswordStore(Path.Combine(folder, "password.json"));
     byte[] password = Encoding.UTF8.GetBytes("测试口令-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(12)));
     try
@@ -51,6 +52,10 @@ try
         Check(!File.ReadAllText(Path.Combine(folder, "password.json")).Contains(Encoding.UTF8.GetString(password), StringComparison.Ordinal), "no plaintext persisted");
         Check(!PasswordStore.ValidLength(Encoding.UTF8.GetBytes("1234567")) && PasswordStore.ValidLength(Encoding.UTF8.GetBytes("12345678")) && !PasswordStore.ValidLength(Encoding.UTF8.GetBytes(new string('a', 129))), "password length bounds");
         BluetoothRestrictionTests.Run(folder, password, Check);
+        ControllerDeviceTests.Run(folder, password, Check);
+        AuthenticationTests.Run(folder, password, Check);
+        StartupTests.Run(folder, Check, password);
+        DataMigrationTests.Run(folder, password, Check);
         File.WriteAllText(Path.Combine(folder, "password.json"), "{}"); Throws(() => store.Verify(password), "corrupt configuration rejects authentication");
         File.WriteAllText(Path.Combine(folder, "password.json"), "{\"Version\":1,\"Algorithm\":\"PBKDF2-HMAC-SHA256\",\"Iterations\":600000,\"Salt\":null,\"Hash\":null}");
         try { store.Read(); throw new Exception("null password fields"); } catch (InvalidDataException) { Check(true, "null password fields report invalid configuration"); }
@@ -58,6 +63,13 @@ try
     finally { CryptographicOperations.ZeroMemory(password); }
     using var stream = new MemoryStream(); await Wire.WriteAsync(stream, new ControlRequest("lock"), CancellationToken.None); stream.Position = 0;
     Check((await Wire.ReadAsync<ControlRequest>(stream, CancellationToken.None)).Version == 2, "V2 framing round trip");
+    using var detailed = new MemoryStream();
+    var largeReply = new ControlReply(false, new Status(LockState.Restoring, 1, false, new string('汉', 2048), OperationError: new string('汉', 2048)), new string('汉', 2048));
+    await Wire.WriteAsync(detailed, largeReply, CancellationToken.None); detailed.Position = 0;
+    Check((await Wire.ReadAsync<ControlReply>(detailed, CancellationToken.None)).Status.State == LockState.Restoring, "multi-device Unicode diagnostics fit bounded response framing");
+    using var oversized = new MemoryStream();
+    try { await Wire.WriteAsync(oversized, new ControlRequest(new string('x', 9000)), CancellationToken.None); throw new Exception("oversized request accepted"); }
+    catch (InvalidDataException) { Check(true, "control request size remains limited to 8 KB"); }
     using var bad = new MemoryStream(); byte[] size = new byte[4]; BinaryPrimitives.WriteInt32LittleEndian(size, 513); bad.Write(size); bad.Position = 0;
     try { await Wire.ReadSecret(bad, CancellationToken.None); throw new Exception("secret bounds"); } catch (InvalidDataException) { Check(true, "binary secret length bounded"); }
     Console.WriteLine($"{passed} checks passed.");

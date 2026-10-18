@@ -19,6 +19,7 @@ public sealed class PasswordStore(string path)
     }
     public PasswordRecord Read()
     {
+        Paths.NoLinks(path);
         if (new FileInfo(path).Length > 4096) throw new InvalidDataException("口令配置损坏，请运行安装程序重置。");
         var r = JsonSerializer.Deserialize<PasswordRecord>(File.ReadAllBytes(path)) ?? throw new InvalidDataException();
         if (r.Version != 1 || r.Algorithm != "PBKDF2-HMAC-SHA256" || r.Iterations != Iterations || r.Salt is not { Length: 16 } || r.Hash is not { Length: 32 }) throw new InvalidDataException("口令配置损坏，请运行安装程序重置。");
@@ -26,11 +27,16 @@ public sealed class PasswordStore(string path)
     }
     public bool Verify(ReadOnlySpan<byte> password)
     {
+        if (!ValidLength(password)) return false;
         var r = Read(); byte[] actual = Rfc2898DeriveBytes.Pbkdf2(password, r.Salt, r.Iterations, HashAlgorithmName.SHA256, 32);
         try { return CryptographicOperations.FixedTimeEquals(actual, r.Hash); }
         finally { CryptographicOperations.ZeroMemory(actual); }
     }
-    public void Set(ReadOnlySpan<byte> password) => AtomicFile.Write(path, JsonSerializer.SerializeToUtf8Bytes(Derive(password)));
+    public void Set(ReadOnlySpan<byte> password)
+    {
+        Paths.NoLinks(path);
+        AtomicFile.Write(path, JsonSerializer.SerializeToUtf8Bytes(Derive(password)));
+    }
 }
 public static class AtomicFile
 {

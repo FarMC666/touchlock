@@ -6,7 +6,7 @@ App 使用 Windows Desktop 自带的 UI Automation 组件。App、Service、Reco
 
 | 项目 | 职责 |
 | --- | --- |
-| App | 当前交互会话的托盘、单向全局快捷键、口令输入、蓝牙设置页面监控、About |
+| App | 当前交互会话的托盘、受保护切换快捷键、口令输入、蓝牙设置页面监控、About |
 | Service | LocalSystem；唯一状态源、设备事务、口令验证、恢复监督 |
 | Recovery | 独立 SYSTEM 进程；持有确切服务句柄，失联后终止旧服务并恢复 |
 | Shared | V2 IPC、PBKDF2、受保护目录/互斥量、SetupAPI/Configuration Manager 后端 |
@@ -15,11 +15,13 @@ App 使用 Windows Desktop 自带的 UI Automation 组件。App、Service、Reco
 
 ## 安装位置
 
-默认位置为 `%ProgramFiles%\TouchLock`，首次安装可选择本地 NTFS 固定磁盘中的新目录。规范化与权限校验拒绝网络路径、系统目录、设备名称、链接和普通用户可替换的上级目录；新目录以 Administrators 所有者和受保护 ACL 原子创建，不更改已有父目录。HKLM 卸载项的 `InstallLocation` 保存实际位置，服务命令行、快捷方式和维护使用该位置；卸载先保存位置再删除注册项，避免误回退到默认目录。密码与恢复记录继续位于 ProgramData。
+默认位置为 `%ProgramFiles%\TouchLock`，首次安装可选择本地 NTFS 固定盘的新目录。拒绝网络路径、系统目录、链接和可被普通用户替换的上级目录；新目录以 Administrators 所有者和受保护 ACL 原子创建，不改已有父目录。
+
+数据布局版本 2：按安装盘选择 ProgramData/TouchLock，若父目录不安全则选同盘 TouchLockData；发现两处都有口令时拒绝覆盖。HKLM 卸载项保存 InstallLocation、DataLocation、DataLayoutVersion；读取时验证数据仍在允许的同盘位置，不回退用户目录或其他盘。无版本标记的旧安装仍从旧 ProgramData 维护。迁移前恢复旧设备与策略，验证口令文件，原子复制并保留原文件；迁移标记防止冰点恢复的旧文件覆盖新口令。默认卸载保留数据，卸载先缓存两个路径再移除注册项。
 
 ## 设备事务
 
-SetupAPI 只枚举当前存在的 HID 类节点，通过兼容 ID `HID_DEVICE_UP:000D_U:0004` 精确识别 Touchscreen。混合 Usage 身份、同父节点或同 ContainerId 的鼠标集合、异常状态和不支持动态禁用的节点被拒绝。枚举不触碰任何节点。禁用前再次检查集合身份。
+SetupAPI 枚举当前存在的全部设备类。`DeviceSelection` 优先精确匹配全部 `Kuma - Touch Screen Extend Service`，没有 Kuma 时通过 `HID_DEVICE_UP:000D_U:0004` 识别标准 Touchscreen。Kuma 不因同容器的鼠标节点被拒绝；明确的其他输入身份、蓝牙祖先、异常状态仍拒绝。通用 HID 保留混合集合和鼠标伴随集合检查。枚举不改变设备，禁用前再次检查身份。
 
 受保护的 `Global\TouchLock.DeviceOperations.v2` 互斥量串行化服务、恢复进程和安装程序的设备操作。恢复记录使用 WriteThrough、Flush(true) 与同目录原子替换；只记录观察到启用的触摸节点，每次禁用前先写记录。`CM_Disable_DevNode` 仅传 `CM_DISABLE_UI_NOT_OK (4)`，随后核对禁用状态；全部成功才报告 Locked。失败则回滚，回滚失败继续保留记录并重试。
 
@@ -31,7 +33,7 @@ SetupAPI 只枚举当前存在的 HID 类节点，通过兼容 ID `HID_DEVICE_UP
 
 口令通过有长度上限的二进制帧传输，与 JSON 控制消息分离。口令输入读取原生编辑控件到临时字符数组；控件、字符数组及字节数组使用后清除，不创建业务口令 string。无法保证消除 Windows 控件或操作系统内部所有历史副本。
 
-PBKDF2-HMAC-SHA256：600,000 迭代、16 字节随机盐、32 字节哈希，恒定时间比较。记录含固定版本与算法参数，位于 `%ProgramData%\TouchLock\password.json`，SYSTEM/Admin ACL，禁止链接路径。错误五次后全局暂停 30 秒。初始设置和忘记口令重置由提升权限 Setup 执行；复位先停止服务并恢复设备。
+PBKDF2-HMAC-SHA256：600,000 迭代、16 字节随机盐、32 字节哈希，恒定时间比较。记录含固定版本与算法参数，位于实际 DataLocation 下的 password.json，SYSTEM/Admin ACL，禁止链接路径。错误五次后全局暂停 30 秒。初始设置和忘记口令重置由提升权限 Setup 执行；复位先停止服务并恢复设备。
 
 Setup 卸载须提供当前管理口令，并在停止服务、恢复设备或删除文件前直接验证受保护的口令记录；错误、取消或配置损坏不执行卸载。密码缓冲区在对话框或测试入口结束后清除。管理员忘记口令的重置恢复入口保留，不能将 Windows 提升权限直接当作卸载口令验证成功。
 
@@ -39,15 +41,17 @@ Setup 卸载须提供当前管理口令，并在停止服务、恢复设备或�
 
 Service 保存唯一的勾选状态，`block-bluetooth-settings` 无口令开启；取消勾选使用 `AllowBluetoothSettings` 认证意图，沿用一次性请求、当前管理口令和错误冷却。认证成功仅修改蓝牙限制，不恢复触摸设备、不删除恢复记录。V2 状态消息追加可选字段，既有认证意图编号保持不变。
 
-状态以版本 1 的 JSON 原子保存到 `%ProgramData%\TouchLock\restrictions.json`，继承目录的 SYSTEM/Admin ACL。旧安装没有文件时默认未勾选；损坏时保持限制并显示错误，输入正确口令取消限制可重新写入有效配置。保存失败不更新内存勾选状态。默认卸载保留配置，显式删除配置时一并删除；重置口令保留勾选状态。
+`RestrictionsStore` 的版本 2 文件保存机器级 `SettingsPageVisibility` 原值和本程序应用值，用于故障恢复，不用于跨重启恢复运行勾选。写前先保存记录，写后读回；兼容已有 hide/showonly 列表。清理仅在当前值仍匹配本程序应用值或原值时执行，外部变化报告冲突并保留记录。服务启动、退出、独立守护恢复及管理员维护都会清理本程序策略；旧版只保存勾选的文件会重置为默认关闭。
 
 App 在独立 MTA 线程中每 250 毫秒扫描当前会话的系统设置窗口，校验 `SystemSettings.exe` 系统路径，并兼容 `ApplicationFrameHost` 承载窗口。通过蓝牙页面内容控件的 AutomationId 判断当前页面，不匹配侧栏或搜索中的“蓝牙”字样；命中后向对应窗口发送 `WM_CLOSE`，不终止进程。UI Automation 遵守[独立 MTA 线程要求](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading)；控件标识可能随系统版本变化，需在目标系统验收。取消勾选与发送关闭消息串行化；托盘退出停止监控，重启托盘后从服务状态继续执行。
 
-只处理系统“设置”中的蓝牙页面，不修改蓝牙开关或配对，不覆盖快速设置、传统控制面板或第三方工具。不是 Windows 访问控制或阻止所有蓝牙操作的安全策略。
+系统策略限制蓝牙及已连接设备页面，监控辅助处理已打开的窗口；不修改蓝牙开关或配对，不覆盖快速设置、传统控制面板或第三方工具。它不代替蓝牙设备访问控制。
 
 ## 状态与恢复
 
-`Unlocked → Locking → Locked → Authenticating → Restoring → Unlocked/Stopping`。错误、取消、超时和托盘进程退出返回认证前状态。未锁定的退出认证取消仍未锁定；修改口令保留原锁定状态。恢复失败保持 Restoring，保留服务与恢复记录。
+`Unlocked → Locking → Locked → Authenticating → Restoring → Unlocked/Stopping`。硬件操作由单个串行 worker 执行，不占用 IPC 状态锁；命令成功表示接受操作，客户端轮询同一 OperationId 到完成并检查 OperationError。状态包含实际目标数、禁用数和逐阶段汇总，不能把接受操作当成设备成功。快捷键先请求新设备快照，再选择锁定或密码恢复。
+
+认证错误、取消和超时返回认证前状态；修改口令保留锁定状态。恢复失败保持 Restoring 和恢复记录。设备事务有进度回报；worker 超过 15 秒无进度时停止守护续约，守护仍按 30 秒失联机制终止旧服务后恢复。后台枚举不覆盖前台操作的结果，完整退出等待恢复完成并短暂保留最终状态供托盘读取。
 
 Service 主循环处理设备/会话变化后每秒续约。不是脱离业务处理的独立心跳线程。Recovery 先打开服务的精确进程句柄，再发 Ready；没有 Ready 不允许锁定。服务退出则恢复；30 秒失联则先终止并等待旧服务，再获取互斥量恢复。新服务先恢复旧记录，不恢复旧锁定。SCM 异常重启间隔 10 秒，连续失败后 60 秒。
 

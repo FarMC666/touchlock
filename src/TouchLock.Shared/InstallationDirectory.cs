@@ -30,7 +30,7 @@ public static class InstallationDirectory
             string name = part.Split('.')[0];
             if (part.Length == 0 || part.EndsWith(' ') || part.EndsWith('.') || part.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name.Equals("CON", StringComparison.OrdinalIgnoreCase) || name.Equals("PRN", StringComparison.OrdinalIgnoreCase) || name.Equals("AUX", StringComparison.OrdinalIgnoreCase) || name.Equals("NUL", StringComparison.OrdinalIgnoreCase) || (name.Length == 4 && (name.StartsWith("COM", StringComparison.OrdinalIgnoreCase) || name.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) && name[3] is >= '1' and <= '9')) throw new IOException("安装路径包含 Windows 不支持的文件夹名称。");
         }
-        foreach (string forbidden in new[] { Environment.GetFolderPath(Environment.SpecialFolder.Windows), Paths.Data })
+        foreach (string forbidden in new[] { Environment.GetFolderPath(Environment.SpecialFolder.Windows), Paths.LegacyData, Paths.DataForInstallation(path), Paths.AlternateDataForInstallation(path) })
             if (path.Equals(forbidden, StringComparison.OrdinalIgnoreCase) || path.StartsWith(forbidden + '\\', StringComparison.OrdinalIgnoreCase)) throw new IOException("不能安装到 Windows 系统目录或 TouchLock 配置目录。");
         return path;
     }
@@ -40,8 +40,14 @@ public static class InstallationDirectory
         var drive = new DriveInfo(Path.GetPathRoot(path)!);
         if (!drive.IsReady || drive.DriveType != DriveType.Fixed || !drive.DriveFormat.Equals("NTFS", StringComparison.OrdinalIgnoreCase)) throw new IOException("安装位置必须在本地 NTFS 固定磁盘上。");
         if (File.Exists(path) || Directory.Exists(path)) throw new IOException("安装文件夹已存在。请选择一个新文件夹，避免覆盖或卸载其他文件。");
+        ValidateProtectedAncestors(path);
+        return path;
+    }
+    public static void ValidateProtectedAncestors(string path, bool includeSelf = false)
+    {
         // A protected child alone is insufficient if a user can rename an ancestor or rewrite its ACL.
-        for (var parent = Directory.GetParent(path); parent != null; parent = parent.Parent)
+        Paths.NoLinks(path);
+        for (var parent = includeSelf ? new DirectoryInfo(path) : Directory.GetParent(path); parent != null; parent = parent.Parent)
         {
             if (!parent.Exists) continue;
             DirectorySecurity acl = parent.GetAccessControl();
@@ -56,7 +62,6 @@ public static class InstallationDirectory
                 if ((rule.FileSystemRights & unsafeRights) != 0 || ((uint)rule.FileSystemRights & (genericAll | genericWrite)) != 0) throw UnsafeParent();
             }
         }
-        return path;
     }
     private static bool Privileged(SecurityIdentifier sid) => sid.Value is "S-1-5-18" or "S-1-5-32-544" or "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
     private static IOException UnsafeParent() => new("上级文件夹可被普通用户替换，不能用于安装系统服务。请选择本地磁盘上的新文件夹，例如 D:\\TouchLock。");

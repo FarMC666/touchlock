@@ -1,12 +1,14 @@
 #Requires -Version 7.0
 #Requires -RunAsAdministrator
-param([switch]$KeepInstalled, [string]$InstallDirectory, [switch]$UninstallOnly)
+param([switch]$KeepInstalled, [string]$InstallDirectory, [switch]$UninstallOnly, [switch]$AuthenticationOnly, [switch]$VerifySettingsUi)
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path
 $defaultInstall = Join-Path $env:ProgramFiles 'TouchLock'
 $installed = if ($InstallDirectory) { [IO.Path]::GetFullPath($InstallDirectory) } else { $defaultInstall }
+$data = Join-Path ([IO.Path]::GetPathRoot($installed)) 'ProgramData/TouchLock'
+$alternateData = Join-Path ([IO.Path]::GetPathRoot($installed)) 'TouchLockData'
 $setup = Join-Path $repo 'artifacts/TouchLock-1.0.0-Setup-x64-debug.exe'
-if ((Get-Service TouchLock -ErrorAction SilentlyContinue) -or (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\TouchLock') -or (Test-Path -LiteralPath $defaultInstall) -or (Test-Path -LiteralPath $installed) -or (Test-Path -LiteralPath (Join-Path $env:ProgramData 'TouchLock'))) { throw 'An existing installation or configuration must be preserved; test refused.' }
+if ((Test-Path -LiteralPath (Join-Path $env:ProgramData 'TouchLock')) -or (Get-Service TouchLock -ErrorAction SilentlyContinue) -or (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\TouchLock') -or (Test-Path -LiteralPath $defaultInstall) -or (Test-Path -LiteralPath $installed) -or (Test-Path -LiteralPath $data) -or (Test-Path -LiteralPath $alternateData)) { throw 'An existing installation or configuration must be preserved; test refused.' }
 $secret = [Text.Encoding]::UTF8.GetBytes([Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(24)))
 function Run-Child([string]$Path, [string]$Argument, [byte[]]$SecretBytes, [int]$Timeout = 120000, [string[]]$AdditionalArguments = @(), [int]$ExpectedExit = 0) {
  $info = [Diagnostics.ProcessStartInfo]::new($Path)
@@ -26,6 +28,8 @@ function Run-Child([string]$Path, [string]$Argument, [byte[]]$SecretBytes, [int]
 function Check([bool]$Passed, [string]$Label) { if (!$Passed) { throw $Label }; Write-Output "PASS $Label" }
 try {
  Run-Child $setup '--test-install' $secret -AdditionalArguments @($installed)
+ $data = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\TouchLock').DataLocation
+ Check ([IO.Path]::GetPathRoot($data) -eq [IO.Path]::GetPathRoot($installed)) 'persistent data is on the installation volume'
  Start-Sleep -Seconds 4
  Check ((Get-Service TouchLock).Status -eq 'Running') 'actual SCM install and start'
  Check ((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\TouchLock').DisplayVersion -eq '1.0.0') 'installed application display version 1.0.0'
@@ -43,12 +47,12 @@ try {
  $guard = @(Get-Process TouchLock.Recovery -ErrorAction SilentlyContinue)
  Check ($guard.Count -eq 1 -and $guard[0].SessionId -eq 0) 'independent SYSTEM recovery process'
  Run-Child (Join-Path $installed 'TouchLock.exe') '--status' @()
- $acl = Get-Acl -LiteralPath (Join-Path $env:ProgramData 'TouchLock/password.json')
+ $acl = Get-Acl -LiteralPath (Join-Path $data 'password.json')
  Check ($acl.AreAccessRulesProtected) 'password ACL protected'
  $tray = @(Get-Process TouchLock -ErrorAction SilentlyContinue | Where-Object SessionId -ne 0)
  Check ($tray.Count -ge 1) 'tray launched in interactive session'
  $originalPid = $service.ProcessId
- $passwordFile = Join-Path $env:ProgramData 'TouchLock/password.json'
+ $passwordFile = Join-Path $data 'password.json'
  $originalPasswordHash = (Get-FileHash -LiteralPath $passwordFile).Hash
  Run-Child $setup '--test-uninstall' @() -ExpectedExit 10
  Check ((Get-Service TouchLock).Status -eq 'Running' -and (Get-CimInstance Win32_Service -Filter "Name='TouchLock'").ProcessId -eq $originalPid -and (Test-Path -LiteralPath $installed)) 'wrong uninstall password leaves service and installation intact'
@@ -63,7 +67,7 @@ try {
  try { [IO.File]::WriteAllText($passwordFile, '{}'); Run-Child $setup '--test-uninstall' $secret -ExpectedExit 11 }
  finally { [IO.File]::WriteAllBytes($passwordFile, $record); [Security.Cryptography.CryptographicOperations]::ZeroMemory($record) }
  Check ((Get-Service TouchLock).Status -eq 'Running' -and (Get-CimInstance Win32_Service -Filter "Name='TouchLock'").ProcessId -eq $originalPid -and (Get-FileHash -LiteralPath $passwordFile).Hash -eq $originalPasswordHash) 'corrupt password configuration cannot stop service or uninstall'
- if (!$UninstallOnly) {
+ if (!$UninstallOnly -and !$AuthenticationOnly) {
  $oldTray = $tray[0].Id; Stop-Process -Id $oldTray -Force
  Start-Sleep -Seconds 12
  Check (@(Get-Process TouchLock -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -ne 0 -and $_.Id -ne $oldTray }).Count -ge 1) 'tray relaunched without service exit'
@@ -88,19 +92,35 @@ try {
  Run-Child $setup '--test-reset' $secret
  Start-Sleep -Seconds 4
  Check ((Get-Service TouchLock).Status -eq 'Running') 'administrator maintenance resets password after recovery'
- Run-Child (Join-Path $installed 'TouchLock.exe') '--test-authentication' $secret
- Start-Sleep -Seconds 3
+ }
+ if (!$UninstallOnly) {
+ $authenticationMode = if ($VerifySettingsUi) { '--test-authentication-with-settings-ui' } else { '--test-authentication' }
+ Run-Child (Join-Path $installed 'TouchLock.exe') $authenticationMode $secret
+ (Get-Service TouchLock).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(15))
  Check ((Get-Service TouchLock).Status -eq 'Stopped') 'authenticated exit stops service'
  Check (@(Get-Process TouchLock.Recovery -ErrorAction SilentlyContinue).Count -eq 0) 'recovery process stops after orderly exit'
+ $logDirectory = Join-Path $data 'Logs'
+ $logFiles = @(Get-ChildItem -LiteralPath $logDirectory -File)
+ Check ($logFiles.Count -ge 2) 'service and guardian diagnostics written on installation volume'
+ $capture = Join-Path $repo 'artifacts/seewo-diagnostics'
+ New-Item -ItemType Directory -Path $capture -Force | Out-Null
+ $passwordRecord = Get-Content -LiteralPath $passwordFile -Raw | ConvertFrom-Json
+ foreach ($logFile in $logFiles) {
+  $logText = Get-Content -LiteralPath $logFile.FullName -Raw
+  Check (!$logText.Contains([Text.Encoding]::UTF8.GetString($secret)) -and !$logText.Contains($passwordRecord.Hash) -and !$logText.Contains($passwordRecord.Salt)) 'diagnostics exclude password, hash and salt'
+  Copy-Item -LiteralPath $logFile.FullName -Destination $capture -Force
+ }
  }
  if (!$KeepInstalled) {
+  $retainedPasswordHash = (Get-FileHash -LiteralPath $passwordFile).Hash
   Run-Child $setup '--test-uninstall-keep' $secret
   Check (!(Get-Service TouchLock -ErrorAction SilentlyContinue) -and !(Test-Path -LiteralPath $installed)) 'actual uninstall removes service and files'
-  Check (Test-Path -LiteralPath (Join-Path $env:ProgramData 'TouchLock/password.json')) 'default uninstall retains password configuration'
+  Check (Test-Path -LiteralPath (Join-Path $data 'password.json')) 'default uninstall retains password configuration'
   Run-Child $setup '--test-install' $secret -AdditionalArguments @($installed)
   Start-Sleep -Seconds 3
+  Check ((Get-FileHash -LiteralPath $passwordFile).Hash -eq $retainedPasswordHash) 'reinstall preserves retained password record without rehashing or replacing it'
   Run-Child $setup '--test-uninstall' $secret
-  Check (!(Test-Path -LiteralPath (Join-Path $env:ProgramData 'TouchLock'))) 'explicit configuration deletion'
+  Check (!(Test-Path -LiteralPath $data)) 'explicit configuration deletion'
  }
 } finally {
  try {

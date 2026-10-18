@@ -3,6 +3,31 @@ using System.Security.Principal;
 namespace TouchLock.Shared;
 public static class ServiceClient
 {
+    public static async Task<ControlReply> RequestWhenIdle(ControlRequest request)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            var reply = await Request(request);
+            bool backgroundBusy = !reply.Success && !reply.Status.OperationRunning &&
+                reply.Status.State is LockState.Unlocked or LockState.Unavailable or LockState.Locked &&
+                reply.Error.Contains("操作正在进行", StringComparison.Ordinal);
+            if (!backgroundBusy || attempt >= 20 || request.Operation == "lock" && reply.Status.State == LockState.Locked) return reply;
+            await Task.Delay(100);
+        }
+    }
+    public static async Task<ControlReply> Complete(ControlReply reply)
+    {
+        if (!reply.Success || !reply.Status.OperationRunning) return reply;
+        Guid operation = reply.Status.OperationId;
+        long deadline = Environment.TickCount64 + 30 * 60 * 1000;
+        while (reply.Success && reply.Status.OperationRunning && reply.Status.OperationId == operation)
+        {
+            if (Environment.TickCount64 >= deadline) return reply with { Success = false, Error = "设备操作仍未完成，请查看托盘状态与诊断日志；不要重复提交。" };
+            await Task.Delay(100);
+            reply = await Request(new("status"));
+        }
+        return reply.Status.OperationError.Length == 0 ? reply : reply with { Success = false, Error = reply.Status.OperationError };
+    }
     private static NamedPipeClientStream Pipe(string name) => new(".", name, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Identification);
     public static async Task<ControlReply> Request(ControlRequest request)
     {

@@ -25,6 +25,10 @@ foreach ($name in @('TouchLock','TouchLock.Service')) {
  $text = [Text.Encoding]::Unicode.GetString($bytes)
  Check (!$text.Contains('--test-authentication') -and !$text.Contains('test-pause') -and !$text.Contains('--preview-ui') -and !$text.Contains('--probe-input') -and !$text.Contains('--test-bluetooth-settings')) "$name release excludes test controls"
 }
+$commit = (& git -C $repo rev-parse HEAD).Trim()
+$shared = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $root 'payload/TouchLock.Shared.dll'))
+Check ($shared.ProductVersion.Contains($commit)) 'diagnostics version identifies current Git commit'
+Check (!(Test-Path -LiteralPath (Join-Path $root 'payload/TouchLock.Core.Tests.dll'))) 'test backend is excluded from installed payload'
 $archive = Join-Path $repo 'artifacts/TouchLock-1.0.0-source.zip'
 $zip = [IO.Compression.ZipFile]::OpenRead($archive)
 try {

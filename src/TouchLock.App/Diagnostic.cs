@@ -7,6 +7,8 @@ internal static class Diagnostic
     public static int Preview(string directory)
     {
         Directory.CreateDirectory(directory);
+        TouchLock.UI.AdaptiveForm.VerifyLayout(() => new AboutDialog(new Status(LockState.Unavailable, 0, false, string.Concat(Enumerable.Repeat("设备状态异常，请检查日志。 ", 30))), false, "蓝牙设置策略读取失败。"), directory, "about");
+        TouchLock.UI.AdaptiveForm.VerifyLayout(() => new TouchLock.UI.PasswordDialog(change: true), directory, "password");
         foreach (string mode in new[] { "initial", "change", "unlock", "uninstall", "bluetooth" })
         {
             using var form = new TouchLock.UI.PasswordDialog(initialize: mode == "initial", change: mode == "change", uninstall: mode == "uninstall", allowBluetoothSettings: mode == "bluetooth");
@@ -17,7 +19,7 @@ internal static class Diagnostic
                 form.PerformLayout();
                 using var bitmap = new Bitmap(form.Width, form.Height);
                 form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size)); bitmap.Save(Path.Combine(directory, mode + ".png"));
-                foreach (var box in form.Controls.OfType<FlowLayoutPanel>().Single().Controls.OfType<TextBox>()) box.Text = sample;
+                foreach (var box in Descendants(form).OfType<TextBox>()) box.Text = sample;
                 ((Button)form.AcceptButton!).PerformClick();
             };
             form.ShowDialog();
@@ -30,6 +32,14 @@ internal static class Diagnostic
             finally { CryptographicOperations.ZeroMemory(expected); }
         }
         return 0;
+    }
+    private static IEnumerable<Control> Descendants(Control parent)
+    {
+        foreach (Control control in parent.Controls)
+        {
+            yield return control;
+            foreach (var nested in Descendants(control)) yield return nested;
+        }
     }
     public static async Task<int> RunBluetoothSettings()
     {
@@ -73,13 +83,13 @@ internal static class Diagnostic
         }
         catch (Exception e) { Console.WriteLine("FAIL " + e.GetType().Name + " " + e.Message); return 1; }
     }
-    public static async Task<int> Run()
+    public static async Task<int> Run(bool verifySettingsUi = false)
     {
         byte[] password = await Wire.ReadSecret(Console.OpenStandardInput(), CancellationToken.None);
         byte[] next = RandomNumberGenerator.GetBytes(24); next = System.Text.Encoding.UTF8.GetBytes(Convert.ToHexString(next));
         try
         {
-            async Task<ControlReply> Begin(AuthenticationIntent intent) => await ServiceClient.Request(new("begin", Intent: intent));
+            async Task<ControlReply> Begin(AuthenticationIntent intent) => await ServiceClient.RequestWhenIdle(new("begin", Intent: intent));
             void Check(bool result, string label) { if (!result) throw new InvalidOperationException(label); Console.WriteLine("PASS " + label); }
             var start = await ServiceClient.Request(new("status"));
             Check(start.Status.State is LockState.Unlocked or LockState.Unavailable, "service starts unlocked");
@@ -92,6 +102,69 @@ internal static class Diagnostic
             var change = await ServiceClient.Submit(challenge.RequestId, password, next); Check(change.Success, "password change succeeds");
             challenge = await Begin(AuthenticationIntent.ChangePassword);
             change = await ServiceClient.Submit(challenge.RequestId, next, password); Check(change.Success, "new password verified and original restored");
+            var policy = new WindowsSettingsPolicy();
+            string? beforePolicy = policy.Read();
+            async Task SettingsPage(string uri, bool bluetoothPage)
+            {
+                await Task.Run(WindowsSettingsPolicy.NotifyChange);
+                long until = Environment.TickCount64 + 15000;
+                while (true)
+                {
+                    try { using var opened = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri) { UseShellExecute = true }); }
+                    catch (System.ComponentModel.Win32Exception e) when (!bluetoothPage && uri != "ms-settings:display")
+                    {
+                        // Some builds reject a hidden URI instead of redirecting. Still require a visible non-Bluetooth page.
+                        Console.WriteLine($"INFO restricted URI activation result 0x{e.NativeErrorCode:X}: {uri}");
+                    }
+                    await Task.Delay(750);
+                    bool expected = await Task.Run(() =>
+                    {
+                        try
+                        {
+                            var windows = BluetoothSettingsMonitor.SettingsWindows();
+                            return windows.Count > 0 && windows.Any(BluetoothSettingsMonitor.IsBluetoothPage) == bluetoothPage;
+                        }
+                        catch (System.Windows.Automation.ElementNotAvailableException) { return false; }
+                        catch (System.Runtime.InteropServices.COMException) { return false; }
+                    });
+                    if (expected) { Check(true, "real Settings navigation " + uri + (bluetoothPage ? " accessible" : " stays outside Bluetooth page")); return; }
+                    if (Environment.TickCount64 >= until) throw new TimeoutException("Settings policy navigation: " + uri);
+                }
+            }
+            if (verifySettingsUi)
+            {
+                await SettingsPage("ms-settings:bluetooth", true);
+                await SettingsPage("ms-settings:connecteddevices", true);
+            }
+            var blocked = await ServiceClient.Request(new("block-bluetooth-settings"));
+            Check(blocked.Success && blocked.Status.BluetoothSettingsBlocked && policy.Read() == RestrictionsStore.Block(beforePolicy), "real SYSTEM IPC applies machine Bluetooth page policy");
+            if (verifySettingsUi)
+            {
+                await SettingsPage("ms-settings:display", false);
+                await SettingsPage("ms-settings:bluetooth", false);
+                await SettingsPage("ms-settings:connecteddevices", false);
+            }
+            else Console.WriteLine("SKIP interactive Settings URI verification; opt in with -VerifySettingsUi on an interactive test computer.");
+            challenge = await Begin(AuthenticationIntent.AllowBluetoothSettings);
+            var denied = await ServiceClient.Submit(challenge.RequestId, [], []);
+            Check(!denied.Success && policy.Read() == RestrictionsStore.Block(beforePolicy), "wrong Bluetooth password retains actual registry policy");
+            challenge = await Begin(AuthenticationIntent.AllowBluetoothSettings);
+            var allowed = await ServiceClient.Submit(challenge.RequestId, password, []);
+            Check(allowed.Success && !allowed.Status.BluetoothSettingsBlocked && policy.Read() == beforePolicy, "authorized Bluetooth cleanup restores actual registry policy");
+            if (verifySettingsUi && beforePolicy == null)
+            {
+                await SettingsPage("ms-settings:bluetooth", true);
+                using var closeTestPage = new BluetoothSettingsMonitor(); closeTestPage.Enabled = true;
+                await Task.Delay(750);
+            }
+            var startup = new WindowsStartupConfiguration();
+            bool beforeStartup = startup.Read();
+            challenge = await Begin(AuthenticationIntent.EnableStartup);
+            var automatic = await ServiceClient.Submit(challenge.RequestId, password, []);
+            Check(automatic.Success && automatic.Status.StartupEnabled && startup.Read(), "authenticated IPC enables actual SCM automatic start");
+            challenge = await Begin(beforeStartup ? AuthenticationIntent.EnableStartup : AuthenticationIntent.DisableStartup);
+            var originalStartup = await ServiceClient.Submit(challenge.RequestId, password, []);
+            Check(originalStartup.Success && startup.Read() == beforeStartup, "authenticated IPC restores original SCM startup setting");
             for (int i = 0; i < 5; i++)
             {
                 challenge = await Begin(AuthenticationIntent.Exit); Check(challenge.Success, "wrong-password trial " + (i + 1));
@@ -100,7 +173,7 @@ internal static class Diagnostic
             Check(!(await Begin(AuthenticationIntent.Exit)).Success, "five failures trigger cooldown");
             await Task.Delay(31000);
             challenge = await Begin(AuthenticationIntent.Exit); Check(challenge.Success, "cooldown expires");
-            var exit = await ServiceClient.Submit(challenge.RequestId, password, []); Check(exit.Success && exit.Status.Stopped, "correct password authorizes exit"); return 0;
+            var exit = await ServiceClient.Complete(await ServiceClient.Submit(challenge.RequestId, password, [])); Check(exit.Success && exit.Status.Stopped, "correct password authorizes exit after completed recovery"); return 0;
         }
         catch (Exception e) { Console.WriteLine("FAIL " + e.GetType().Name + " " + e.Message); return 1; }
         finally { CryptographicOperations.ZeroMemory(password); CryptographicOperations.ZeroMemory(next); }

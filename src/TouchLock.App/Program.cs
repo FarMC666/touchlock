@@ -7,6 +7,10 @@ internal static class Program
 {
     [STAThread] public static int Main(string[] args)
     {
+        if (args.SequenceEqual(["--inventory"]))
+        {
+            Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { Windows = Environment.OSVersion.VersionString, Version = Diagnostics.Version, Inventory = WindowsDevices.Inventory(), Targets = new WindowsDevices().Enumerate() })); return 0;
+        }
         if (args.SequenceEqual(["--status"]))
         {
             try { Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(ServiceClient.Request(new("status")).GetAwaiter().GetResult())); return 0; } catch { return 2; }
@@ -14,6 +18,7 @@ internal static class Program
 #if DEBUG
         if (args.Length == 2 && args[0] == "--probe-input") { ApplicationConfiguration.Initialize(); Application.Run(new InputProbe(args[1])); return 0; }
         if (args.SequenceEqual(["--test-authentication"])) return Diagnostic.Run().GetAwaiter().GetResult();
+        if (args.SequenceEqual(["--test-authentication-with-settings-ui"])) return Diagnostic.Run(verifySettingsUi: true).GetAwaiter().GetResult();
         if (args.SequenceEqual(["--test-bluetooth-settings"])) return Diagnostic.RunBluetoothSettings().GetAwaiter().GetResult();
         if (args.SequenceEqual(["--test-pause"])) { try { ServiceClient.Request(new("test-pause")).GetAwaiter().GetResult(); } catch { } return 0; }
         if (args.Length == 2 && args[0] == "--preview-ui") { ApplicationConfiguration.Initialize(); return Diagnostic.Preview(args[1]); }
@@ -31,6 +36,7 @@ internal sealed class Tray : ApplicationContext
     private readonly NotifyIcon icon;
     private readonly ToolStripMenuItem status = new("TouchLock"), locking = new("锁定触摸"), unlocking = new("解除触摸锁定..."), changing = new("修改管理口令..."), exit = new("退出...");
     private readonly ToolStripMenuItem bluetooth = new("禁止进入 Windows 蓝牙设置") { CheckOnClick = false };
+    private readonly ToolStripMenuItem startup = new("开机自启动") { CheckOnClick = false };
     private readonly BluetoothSettingsMonitor bluetoothMonitor = new();
     private readonly System.Windows.Forms.Timer poll = new() { Interval = 1000 };
     private readonly Hotkey hotkey;
@@ -39,41 +45,67 @@ internal sealed class Tray : ApplicationContext
     public Tray()
     {
         var menu = new ContextMenuStrip(); status.Enabled = false;
-        menu.Items.AddRange([status, new ToolStripSeparator(), locking, unlocking, bluetooth, changing, new ToolStripSeparator(), new ToolStripMenuItem("关于 TouchLock", null, (_, _) => About()), new ToolStripSeparator(), exit]);
+        menu.Items.AddRange([status, new ToolStripSeparator(), locking, unlocking, bluetooth, startup, changing, new ToolStripSeparator(), new ToolStripMenuItem("关于 TouchLock", null, (_, _) => About()), new ToolStripSeparator(), exit]);
         icon = new NotifyIcon { Icon = SystemIcons.Shield, Text = "TouchLock", ContextMenuStrip = menu, Visible = true };
         icon.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) menu.Show(Cursor.Position); };
         locking.Click += async (_, _) => await Lock(); unlocking.Click += async (_, _) => await Authenticate(AuthenticationIntent.Unlock);
         changing.Click += async (_, _) => await Authenticate(AuthenticationIntent.ChangePassword); exit.Click += async (_, _) => await Authenticate(AuthenticationIntent.Exit);
         bluetooth.Click += async (_, _) => await ToggleBluetoothSettings();
-        hotkey = new Hotkey(async () => await Lock()); poll.Tick += async (_, _) => await Poll(); poll.Start();
+        startup.Click += async (_, _) => await Authenticate(latest?.StartupEnabled == true ? AuthenticationIntent.DisableStartup : AuthenticationIntent.EnableStartup);
+        hotkey = new Hotkey(async () => await ToggleTouch()); poll.Tick += async (_, _) => await Poll(); poll.Start();
         _ = Poll();
     }
     private void RefreshMenu()
     {
         status.Text = latest == null ? "TouchLock · 服务连接中" : "TouchLock · " + (latest.State switch
         {
-            LockState.Locked => "触摸已锁定", LockState.Authenticating => "正在认证", LockState.Restoring => "正在恢复触摸", LockState.Unavailable => "不可用", _ => "触摸可用"
+            LockState.Locked => "触摸已锁定", LockState.Locking => "正在锁定触摸", LockState.Authenticating => "正在认证", LockState.Restoring => "正在恢复触摸", LockState.Stopping => "正在退出", LockState.Unavailable => latest.Reason.StartsWith("未找到", StringComparison.Ordinal) ? "无可操作触摸设备" : "不可用", _ => "触摸可用"
         });
+        icon.Text = status.Text.Length <= 63 ? status.Text : status.Text[..63];
         locking.Enabled = !busy && latest is { State: LockState.Unlocked, Available: true };
         unlocking.Enabled = !busy && latest?.State == LockState.Locked;
         changing.Enabled = exit.Enabled = !busy && latest?.State is LockState.Unlocked or LockState.Unavailable or LockState.Locked;
         bluetooth.Enabled = !busy && latest is { Stopped: false, State: LockState.Unlocked or LockState.Unavailable or LockState.Locked };
+        bool policyChanged = bluetooth.Checked != (latest?.BluetoothSettingsBlocked == true);
         bluetooth.Checked = latest?.BluetoothSettingsBlocked == true;
+        if (policyChanged) _ = Task.Run(WindowsSettingsPolicy.NotifyChange); // Notify windows in the interactive session, not service session 0.
         bluetoothMonitor.Enabled = bluetooth.Checked;
+        startup.Checked = latest?.StartupEnabled == true;
+        startup.Enabled = !busy && latest is { Stopped: false, StartupError.Length: 0, State: LockState.Unlocked or LockState.Unavailable or LockState.Locked };
         bluetooth.Text = "禁止进入 Windows 蓝牙设置" + (bluetoothMonitor.Error.Length > 0 || latest?.BluetoothSettingsError.Length > 0 ? "（异常，查看关于）" : "");
     }
     private async Task Poll()
     {
         if (polling) return; polling = true;
         try { latest = (await ServiceClient.Request(new("status"))).Status; if (latest.Stopped && !busy) ExitThread(); }
-        catch { latest = new(LockState.Unavailable, 0, false, "服务未运行。请重新打开 TouchLock，或运行安装程序维护。", BluetoothSettingsBlocked: latest?.BluetoothSettingsBlocked == true, BluetoothSettingsError: latest?.BluetoothSettingsError ?? ""); }
+        catch { latest = new(LockState.Unavailable, 0, false, "服务未运行。请重新打开 TouchLock，或运行安装程序维护。", BluetoothSettingsBlocked: latest?.BluetoothSettingsBlocked == true, BluetoothSettingsError: latest?.BluetoothSettingsError ?? "", StartupEnabled: latest?.StartupEnabled == true, StartupError: "服务未连接，无法确认自启动状态。"); }
         finally { polling = false; RefreshMenu(); }
     }
     private async Task Lock()
     {
         if (busy) return;
-        try { latest = (await ServiceClient.Request(new("lock"))).Status; } catch { }
-        RefreshMenu(); // Lock never displays a window, notification, sound, or changed icon.
+        busy = true; RefreshMenu();
+        try
+        {
+            var result = await ServiceClient.Complete(await ServiceClient.RequestWhenIdle(new("lock"))); latest = result.Status;
+            if (!result.Success) MessageBox.Show(result.Error, "TouchLock");
+        }
+        catch { MessageBox.Show("无法确认锁定结果，请检查托盘状态及诊断日志。", "TouchLock"); }
+        finally { busy = false; RefreshMenu(); }
+    }
+    private async Task ToggleTouch()
+    {
+        if (busy) return;
+        busy = true; RefreshMenu();
+        try
+        {
+            var result = await ServiceClient.Complete(await ServiceClient.RequestWhenIdle(new("refresh"))); latest = result.Status;
+            if (!result.Success) return;
+        }
+        catch { return; }
+        finally { busy = false; RefreshMenu(); }
+        if (latest?.State == LockState.Locked) await Authenticate(AuthenticationIntent.Unlock);
+        else if (latest is { State: LockState.Unlocked, Available: true }) await Lock();
     }
     private async Task ToggleBluetoothSettings()
     {
@@ -93,14 +125,16 @@ internal sealed class Tray : ApplicationContext
         if (busy) return; busy = true; RefreshMenu(); Guid request = Guid.Empty;
         try
         {
-            var started = await ServiceClient.Request(new("begin", Intent: intent));
+            var started = await ServiceClient.RequestWhenIdle(new("begin", Intent: intent));
             if (!started.Success) { MessageBox.Show(started.Error, "TouchLock"); return; }
             request = started.RequestId;
-            using var dialog = new PasswordDialog(change: intent == AuthenticationIntent.ChangePassword, exit: intent == AuthenticationIntent.Exit, allowBluetoothSettings: intent == AuthenticationIntent.AllowBluetoothSettings);
+            using var dialog = new PasswordDialog(change: intent == AuthenticationIntent.ChangePassword, exit: intent == AuthenticationIntent.Exit, allowBluetoothSettings: intent == AuthenticationIntent.AllowBluetoothSettings,
+                actionText: intent == AuthenticationIntent.EnableStartup ? "开启开机自启动" : intent == AuthenticationIntent.DisableStartup ? "关闭开机自启动" : null);
             if (dialog.ShowDialog() != DialogResult.OK) return;
-            var result = await ServiceClient.Submit(request, dialog.Password, dialog.NewPassword); request = Guid.Empty; latest = result.Status;
+            var result = await ServiceClient.Submit(request, dialog.Password, dialog.NewPassword); request = Guid.Empty;
+            result = await ServiceClient.Complete(result); latest = result.Status;
             if (!result.Success) MessageBox.Show(result.Error, "TouchLock");
-            else if (intent == AuthenticationIntent.Exit) ExitThread();
+            else if (intent == AuthenticationIntent.Exit && result.Status.Stopped) ExitThread();
         }
         catch { MessageBox.Show("无法完成认证。请稍后重试，或运行安装程序维护。", "TouchLock"); }
         finally
@@ -111,9 +145,7 @@ internal sealed class Tray : ApplicationContext
     }
     private void About()
     {
-        bool bluetoothError = latest?.BluetoothSettingsError.Length > 0 || bluetoothMonitor.Error.Length > 0;
-        using var form = new Form { Text = "关于 TouchLock", ClientSize = new Size(430, bluetoothError ? 440 : 340), StartPosition = FormStartPosition.CenterScreen, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = new Font("Microsoft YaHei UI", 10) };
-        form.Controls.Add(new Label { Dock = DockStyle.Fill, Padding = new Padding(25), Text = "TouchLock\n\nVersion 1.0.0\n\n一个用于暂时锁定 Windows\n触摸屏输入的小工具。\n\n永远爱Ayanami\n\n" + (latest?.Reason ?? "") + (hotkey.Registered ? "" : "\n快捷键被占用，请使用托盘菜单锁定。") + (latest?.BluetoothSettingsError.Length > 0 ? "\n" + latest.BluetoothSettingsError : "") + (bluetoothMonitor.Error.Length > 0 ? "\n" + bluetoothMonitor.Error : "") });
+        using var form = new AboutDialog(latest, hotkey.Registered, bluetoothMonitor.Error);
         form.ShowDialog();
     }
     protected override void Dispose(bool disposing)
