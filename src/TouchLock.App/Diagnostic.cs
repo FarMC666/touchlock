@@ -7,6 +7,8 @@ internal static class Diagnostic
     public static int Preview(string directory)
     {
         Directory.CreateDirectory(directory);
+        TouchLock.UI.AdaptiveForm.VerifyLayout(() => new AboutDialog(new Status(LockState.Unavailable, 0, false, string.Concat(Enumerable.Repeat("设备状态异常，请检查日志。 ", 30))), false, "蓝牙设置策略读取失败。"), directory, "about");
+        TouchLock.UI.AdaptiveForm.VerifyLayout(() => new TouchLock.UI.PasswordDialog(change: true), directory, "password");
         foreach (string mode in new[] { "initial", "change", "unlock", "uninstall", "bluetooth" })
         {
             using var form = new TouchLock.UI.PasswordDialog(initialize: mode == "initial", change: mode == "change", uninstall: mode == "uninstall", allowBluetoothSettings: mode == "bluetooth");
@@ -17,7 +19,7 @@ internal static class Diagnostic
                 form.PerformLayout();
                 using var bitmap = new Bitmap(form.Width, form.Height);
                 form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size)); bitmap.Save(Path.Combine(directory, mode + ".png"));
-                foreach (var box in form.Controls.OfType<FlowLayoutPanel>().Single().Controls.OfType<TextBox>()) box.Text = sample;
+                foreach (var box in Descendants(form).OfType<TextBox>()) box.Text = sample;
                 ((Button)form.AcceptButton!).PerformClick();
             };
             form.ShowDialog();
@@ -30,6 +32,14 @@ internal static class Diagnostic
             finally { CryptographicOperations.ZeroMemory(expected); }
         }
         return 0;
+    }
+    private static IEnumerable<Control> Descendants(Control parent)
+    {
+        foreach (Control control in parent.Controls)
+        {
+            yield return control;
+            foreach (var nested in Descendants(control)) yield return nested;
+        }
     }
     public static async Task<int> RunBluetoothSettings()
     {

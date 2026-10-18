@@ -6,6 +6,12 @@ internal static class Program
 {
     [STAThread] public static int Main(string[] args)
     {
+#if DEBUG
+        if (args.Length == 2 && args[0] == "--preview-layout")
+        {
+            ApplicationConfiguration.Initialize(); AdaptiveForm.VerifyLayout(() => new SetupForm(), args[1], "setup"); return 0;
+        }
+#endif
         if (!WindowsSecurity.Elevated) return 5;
         ApplicationConfiguration.Initialize();
         // Run maintenance outside the installed directory so uninstall can remove every installed file.
@@ -75,23 +81,23 @@ internal static class Program
     }
 #endif
 }
-internal sealed class SetupForm : Form
+internal sealed class SetupForm : AdaptiveForm
 {
-    private readonly Button install = new() { Text = "安装并设置管理口令", Width = 380, Height = 40 };
-    private readonly Button reset = new() { Text = "重置忘记的管理口令", Width = 380, Height = 40 };
-    private readonly Button uninstall = new() { Text = "卸载 TouchLock", Width = 380, Height = 40 };
+    private readonly Button install = new() { Text = "安装并设置管理口令", AutoSize = true, Dock = DockStyle.Top, MinimumSize = new Size(0, 40) };
+    private readonly Button reset = new() { Text = "重置忘记的管理口令", AutoSize = true, Dock = DockStyle.Top, MinimumSize = new Size(0, 40) };
+    private readonly Button uninstall = new() { Text = "卸载 TouchLock", AutoSize = true, Dock = DockStyle.Top, MinimumSize = new Size(0, 40) };
     private readonly CheckBox delete = new() { Text = "卸载时同时删除口令和蓝牙限制配置", AutoSize = true };
-    private readonly TextBox location = new() { Width = 390 };
-    private readonly Button browse = new() { Text = "浏览...", Width = 85, Height = 33 };
+    private readonly TextBox location = new() { Dock = DockStyle.Fill };
+    private readonly Button browse = new() { Text = "浏览...", AutoSize = true, MinimumSize = new Size(85, 33) };
     public SetupForm()
     {
         Text = "TouchLock 1.0.0 安装与维护"; ClientSize = new Size(550, 490); StartPosition = FormStartPosition.CenterScreen;
-        Font = new Font("Microsoft YaHei UI", 10); FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
-        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(25), FlowDirection = FlowDirection.TopDown, WrapContents = false }; Controls.Add(layout);
+        var layout = Content();
         layout.Controls.Add(new Label { Text = "TouchLock\n临时锁定触摸，保留鼠标和键盘操作。\n无需驱动证书或测试模式。", AutoSize = true, Margin = new Padding(0, 0, 0, 15) });
         layout.Controls.Add(new Label { Text = "安装位置", AutoSize = true });
-        var locationRow = new Panel { Width = 490, Height = 38 }; location.Top = 4; browse.Left = 400;
-        locationRow.Controls.Add(location); locationRow.Controls.Add(browse); layout.Controls.Add(locationRow);
+        var locationRow = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Dock = DockStyle.Top, Margin = Padding.Empty };
+        locationRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); locationRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        locationRow.Controls.Add(location, 0, 0); locationRow.Controls.Add(browse, 1, 0); layout.Controls.Add(locationRow);
         layout.Controls.Add(new Label { Text = "可输入路径，或浏览选择上级文件夹。\n请选择本地 NTFS 磁盘上的新文件夹。", AutoSize = true, MaximumSize = new Size(490, 0), Font = new Font(Font.FontFamily, 9), ForeColor = Color.DimGray, Margin = new Padding(0, 0, 0, 12) });
         layout.Controls.Add(install); layout.Controls.Add(reset); layout.Controls.Add(delete); layout.Controls.Add(uninstall);
         bool installed = Services.Exists() || InstallationDirectory.Registered || Directory.Exists(Paths.Install) || Services.Exists("TouchLockFilter");

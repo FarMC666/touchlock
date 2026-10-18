@@ -137,9 +137,7 @@ internal sealed class Tray : ApplicationContext
     }
     private void About()
     {
-        bool bluetoothError = latest?.BluetoothSettingsError.Length > 0 || bluetoothMonitor.Error.Length > 0;
-        using var form = new Form { Text = "关于 TouchLock", ClientSize = new Size(430, bluetoothError ? 440 : 340), StartPosition = FormStartPosition.CenterScreen, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = new Font("Microsoft YaHei UI", 10) };
-        form.Controls.Add(new Label { Dock = DockStyle.Fill, Padding = new Padding(25), Text = "TouchLock\n\nVersion 1.0.0\n\n一个用于暂时锁定 Windows\n触摸屏输入的小工具。\n\n永远爱Ayanami\n\n" + (latest?.Reason ?? "") + (hotkey.Registered ? "" : "\n快捷键被占用，请使用托盘菜单锁定。") + (latest?.BluetoothSettingsError.Length > 0 ? "\n" + latest.BluetoothSettingsError : "") + (bluetoothMonitor.Error.Length > 0 ? "\n" + bluetoothMonitor.Error : "") });
+        using var form = new AboutDialog(latest, hotkey.Registered, bluetoothMonitor.Error);
         form.ShowDialog();
     }
     protected override void Dispose(bool disposing)

@@ -3,21 +3,20 @@ using System.Security.Cryptography;
 using System.Text;
 using TouchLock.Shared;
 namespace TouchLock.UI;
-internal sealed class PasswordDialog : Form
+internal sealed class PasswordDialog : AdaptiveForm
 {
     private readonly TextBox current = Box(), replacement = Box(), confirm = Box();
     private readonly bool initialize, change;
     public byte[] Password { get; private set; } = [];
     public byte[] NewPassword { get; private set; } = [];
-    private static TextBox Box() => new() { UseSystemPasswordChar = true, MaxLength = 128, Width = 370 };
+    private static TextBox Box() => new() { UseSystemPasswordChar = true, MaxLength = 128, Dock = DockStyle.Top };
     public PasswordDialog(bool initialize = false, bool change = false, bool exit = false, bool uninstall = false, bool allowBluetoothSettings = false)
     {
         this.initialize = initialize; this.change = change;
         Text = initialize ? "设置 TouchLock 管理口令" : change ? "修改管理口令" : uninstall ? "卸载 TouchLock" : exit ? "退出 TouchLock" : allowBluetoothSettings ? "允许进入 Windows 蓝牙设置" : "解除触摸锁定";
-        Font = new Font("Microsoft YaHei UI", 10); ClientSize = new Size(430, initialize ? 280 : change ? 365 : 255);
-        StartPosition = FormStartPosition.CenterScreen; FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
-        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(24, 18, 24, 18), FlowDirection = FlowDirection.TopDown, WrapContents = false };
-        Controls.Add(layout);
+        ClientSize = new Size(460, initialize ? 340 : change ? 410 : 300);
+        var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft };
+        var layout = Content(buttons);
         layout.Controls.Add(new Label { Text = initialize ? "设置独立管理口令（8～128 个字符）。\n解除限制、退出和卸载时需要使用。" : uninstall ? "卸载前需要验证管理口令。\n恢复触摸前请移开屏幕上的手指。" : allowBluetoothSettings ? "取消蓝牙设置限制前需要验证管理口令。\n使用鼠标或物理键盘输入管理口令。" : "恢复触摸前请移开屏幕上的手指。\n使用鼠标或物理键盘输入管理口令。", AutoSize = true, Margin = new Padding(0, 0, 0, 14) });
         if (!initialize) { layout.Controls.Add(new Label { Text = change ? "当前管理口令" : "管理口令", AutoSize = true }); layout.Controls.Add(current); }
         if (initialize || change)
@@ -25,10 +24,9 @@ internal sealed class PasswordDialog : Form
             layout.Controls.Add(new Label { Text = "新管理口令", AutoSize = true }); layout.Controls.Add(replacement);
             layout.Controls.Add(new Label { Text = "确认新管理口令", AutoSize = true }); layout.Controls.Add(confirm);
         }
-        var buttons = new FlowLayoutPanel { Width = 370, Height = 45, FlowDirection = FlowDirection.RightToLeft, Margin = new Padding(0, 15, 0, 0) };
-        var cancel = new Button { Text = "取消", DialogResult = DialogResult.Cancel, Width = 95, Height = 32 };
-        var ok = new Button { Text = uninstall ? "卸载" : "确定", Width = 95, Height = 32 };
-        buttons.Controls.Add(cancel); buttons.Controls.Add(ok); layout.Controls.Add(buttons); CancelButton = cancel; AcceptButton = ok;
+        var cancel = new Button { Text = "取消", DialogResult = DialogResult.Cancel, AutoSize = true, MinimumSize = new Size(95, 34) };
+        var ok = new Button { Text = uninstall ? "卸载" : "确定", AutoSize = true, MinimumSize = new Size(95, 34) };
+        buttons.Controls.Add(cancel); buttons.Controls.Add(ok); CancelButton = cancel; AcceptButton = ok;
         ok.Click += (_, _) => Accept(); FormClosed += (_, _) => { current.Clear(); replacement.Clear(); confirm.Clear(); };
     }
     [DllImport("user32", CharSet = CharSet.Unicode)] private static extern int GetWindowTextW(nint window, [Out] char[] value, int maximum);

@@ -3,6 +3,10 @@
     <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors><PlatformTarget>x64</PlatformTarget>
     <Version>1.0.0</Version><Deterministic>true</Deterministic>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <RestorePackagesPath>$(MSBuildThisFileDirectory).tools\nuget</RestorePackagesPath>
   </PropertyGroup>
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'TouchLock.App' Or '$(MSBuildProjectName)' == 'TouchLock.Setup'">
+    <Compile Include="$(MSBuildThisFileDirectory)src/TouchLock.UI/AdaptiveForm.cs" Link="AdaptiveForm.cs" />
+  </ItemGroup>
 </Project>
