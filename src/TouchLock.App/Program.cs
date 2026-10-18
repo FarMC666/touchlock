@@ -18,6 +18,7 @@ internal static class Program
 #if DEBUG
         if (args.Length == 2 && args[0] == "--probe-input") { ApplicationConfiguration.Initialize(); Application.Run(new InputProbe(args[1])); return 0; }
         if (args.SequenceEqual(["--test-authentication"])) return Diagnostic.Run().GetAwaiter().GetResult();
+        if (args.SequenceEqual(["--test-authentication-with-settings-ui"])) return Diagnostic.Run(verifySettingsUi: true).GetAwaiter().GetResult();
         if (args.SequenceEqual(["--test-bluetooth-settings"])) return Diagnostic.RunBluetoothSettings().GetAwaiter().GetResult();
         if (args.SequenceEqual(["--test-pause"])) { try { ServiceClient.Request(new("test-pause")).GetAwaiter().GetResult(); } catch { } return 0; }
         if (args.Length == 2 && args[0] == "--preview-ui") { ApplicationConfiguration.Initialize(); return Diagnostic.Preview(args[1]); }
@@ -86,7 +87,7 @@ internal sealed class Tray : ApplicationContext
         busy = true; RefreshMenu();
         try
         {
-            var result = await ServiceClient.Complete(await ServiceClient.Request(new("lock"))); latest = result.Status;
+            var result = await ServiceClient.Complete(await ServiceClient.RequestWhenIdle(new("lock"))); latest = result.Status;
             if (!result.Success) MessageBox.Show(result.Error, "TouchLock");
         }
         catch { MessageBox.Show("无法确认锁定结果，请检查托盘状态及诊断日志。", "TouchLock"); }
@@ -98,7 +99,7 @@ internal sealed class Tray : ApplicationContext
         busy = true; RefreshMenu();
         try
         {
-            var result = await ServiceClient.Complete(await ServiceClient.Request(new("refresh"))); latest = result.Status;
+            var result = await ServiceClient.Complete(await ServiceClient.RequestWhenIdle(new("refresh"))); latest = result.Status;
             if (!result.Success) return;
         }
         catch { return; }
@@ -124,7 +125,7 @@ internal sealed class Tray : ApplicationContext
         if (busy) return; busy = true; RefreshMenu(); Guid request = Guid.Empty;
         try
         {
-            var started = await ServiceClient.Request(new("begin", Intent: intent));
+            var started = await ServiceClient.RequestWhenIdle(new("begin", Intent: intent));
             if (!started.Success) { MessageBox.Show(started.Error, "TouchLock"); return; }
             request = started.RequestId;
             using var dialog = new PasswordDialog(change: intent == AuthenticationIntent.ChangePassword, exit: intent == AuthenticationIntent.Exit, allowBluetoothSettings: intent == AuthenticationIntent.AllowBluetoothSettings,

@@ -1,7 +1,10 @@
 using System.Text.Json;
 namespace TouchLock.Shared;
 public sealed record TouchDevice(string Id, bool Disabled, bool Disableable, bool Safe, string Reason = "",
-    TouchMatch Match = TouchMatch.GenericHid, string Name = "", string DeviceClass = "", uint Status = 0, uint Problem = 0);
+    TouchMatch Match = TouchMatch.GenericHid, string Name = "", string DeviceClass = "", uint Status = 0, uint Problem = 0)
+{
+    public bool NeedsRestart => Problem == 14 || (Status & 0x100) != 0;
+}
 public interface IDeviceBackend
 {
     IReadOnlyList<TouchDevice> Enumerate();
@@ -24,10 +27,10 @@ public sealed class DeviceTransaction(IDeviceBackend backend, string journal)
         if (!Pending) return [];
         if (new FileInfo(journal).Length > 65536) throw new InvalidDataException("恢复记录损坏。");
         var r = JsonSerializer.Deserialize<RecoveryRecord>(File.ReadAllBytes(journal)) ?? throw new InvalidDataException();
-        if (r.DeviceIds == null || r.DeviceIds.Length > 128 || r.DeviceIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() != r.DeviceIds.Length) throw new InvalidDataException("恢复记录损坏。");
+        if (r.DeviceIds == null || r.DeviceIds.Length > 128 || r.DeviceIds.Any(string.IsNullOrWhiteSpace) || r.DeviceIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() != r.DeviceIds.Length) throw new InvalidDataException("恢复记录损坏。");
         RecoveryTarget[] targets;
         if (r.Version == 1) targets = r.DeviceIds.Select(id => new RecoveryTarget(id, TouchMatch.GenericHid, "", "")).ToArray();
-        else if (r.Version == 2 && r.Targets != null && r.Targets.Select(t => t.Id).SequenceEqual(r.DeviceIds)) targets = r.Targets;
+        else if (r.Version == 2 && r.Targets != null && r.Targets.All(t => t is { Name: not null, DeviceClass: not null }) && r.Targets.Select(t => t.Id).SequenceEqual(r.DeviceIds)) targets = r.Targets;
         else throw new InvalidDataException("恢复记录版本无效。");
         foreach (var target in targets)
             if (string.IsNullOrWhiteSpace(target.Id) || target.Id.Length > 1024 || target.Id.Any(char.IsControl) || !target.Id.Contains('\\') ||
@@ -39,7 +42,9 @@ public sealed class DeviceTransaction(IDeviceBackend backend, string journal)
     private void Save(IEnumerable<RecoveryTarget> targets)
     {
         var values = targets.ToArray();
-        AtomicFile.Write(journal, JsonSerializer.SerializeToUtf8Bytes(new RecoveryRecord(2, values.Select(t => t.Id).ToArray(), values)));
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new RecoveryRecord(2, values.Select(t => t.Id).ToArray(), values));
+        if (bytes.Length > 65536) throw new IOException("恢复记录超出安全大小，未执行后续禁用。");
+        AtomicFile.Write(journal, bytes);
     }
     private void Report(DeviceOperationSummary summary)
     {
@@ -75,12 +80,18 @@ public sealed class DeviceTransaction(IDeviceBackend backend, string journal)
                     if (!backend.IsDisabled(d.Id)) throw new IOException("设备禁用调用未实际生效。");
                     succeeded++;
                 }
-                catch (Exception e) { errors.Add(d.Id + ": " + e.Message); Diagnostics.Write("device-disable-failed", new { d.Id, d.Name, Error = e.Message }); }
+                catch (Exception e)
+                {
+                    errors.Add(d.Id + ": " + e.Message);
+                    TouchDevice? current = null;
+                    try { current = backend.Find(d.Id); } catch { }
+                    Diagnostics.Write("device-disable-failed", new { d.Id, d.Name, d.DeviceClass, Current = current, Error = e.Message });
+                }
                 Report(new(all.Count, all.Count - targets.Length, attempted, succeeded, errors.Count, "disable"));
             }
             var after = backend.Enumerate();
             Diagnostics.Write("device-after-disable", after);
-            if (errors.Count > 0 || all.Any(d => !after.Any(a => a.Id.Equals(d.Id, StringComparison.OrdinalIgnoreCase) && a.Disabled && a.Safe)))
+            if (errors.Count > 0 || after.Count != all.Count || all.Any(d => !after.Any(a => a.Id.Equals(d.Id, StringComparison.OrdinalIgnoreCase) && a.Disabled && a.Safe && a.Match == d.Match)))
                 throw new IOException($"发现 {all.Count} 个，尝试 {attempted} 个，成功禁用 {succeeded} 个，失败 {errors.Count} 个；最终状态校验未通过，将恢复本次操作。" + string.Join("；", errors));
         }
         catch
@@ -102,7 +113,7 @@ public sealed class DeviceTransaction(IDeviceBackend backend, string journal)
             try
             {
                 var current = backend.Find(target.Id);
-                if (current == null || current.Match != target.Match ||
+                if (current is not { Safe: true } || current.Match != target.Match ||
                     (target.Name.Length > 0 && !current.Name.Equals(target.Name, StringComparison.OrdinalIgnoreCase)) ||
                     (target.DeviceClass.Length > 0 && !current.DeviceClass.Equals(target.DeviceClass, StringComparison.OrdinalIgnoreCase))) throw new IOException("设备断开或恢复身份不匹配。");
                 backend.Enable(target.Id);

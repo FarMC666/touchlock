@@ -4,7 +4,12 @@ public enum TouchMatch { GenericHid, Kuma }
 public enum DeviceState { Enabled, Disabled, Missing, Error, Unknown }
 public sealed record DeviceNode(string Id, string Name, string DeviceClass, string[] CompatibleIds,
     uint Status, uint Problem, uint Parent = 0, Guid Container = default,
-    uint ConfigRet = 0, bool Bluetooth = false, string[]? PropertyErrors = null);
+    uint ConfigRet = 0, bool Bluetooth = false, string[]? PropertyErrors = null)
+{
+    public bool NeedsRestart => Problem == 14 || (Status & 0x100) != 0;
+    public string State => (ConfigRet != 0 ? DeviceState.Unknown : (Status & 0x400) != 0 && Problem == 22 ? DeviceState.Disabled :
+        (Status & 0x400) != 0 || Problem != 0 ? DeviceState.Error : (Status & 8) != 0 ? DeviceState.Enabled : DeviceState.Unknown).ToString();
+}
 
 public static class DeviceSelection
 {
@@ -17,7 +22,7 @@ public static class DeviceSelection
         return nodes.Where(n => kuma ? IsKuma(n) : n.CompatibleIds.Contains(TouchId, StringComparer.OrdinalIgnoreCase)).Select(n =>
         {
             bool disabled = n.ConfigRet == 0 && (n.Status & 0x400) != 0 && n.Problem == 22;
-            bool healthy = n.ConfigRet == 0 && (disabled || ((n.Status & 0x400) == 0 && (n.Status & 8) != 0 && n.Problem == 0));
+            bool healthy = n.ConfigRet == 0 && !n.NeedsRestart && (disabled || ((n.Status & 0x400) == 0 && (n.Status & 8) != 0 && n.Problem == 0));
             bool mixed = n.CompatibleIds.Any(u => u.StartsWith("HID_DEVICE_UP:", StringComparison.OrdinalIgnoreCase) && !u.Equals(TouchId, StringComparison.OrdinalIgnoreCase));
             bool input = n.Bluetooth || n.Id.StartsWith("BTH", StringComparison.OrdinalIgnoreCase) ||
                 n.DeviceClass.Equals("Keyboard", StringComparison.OrdinalIgnoreCase) || n.DeviceClass.Equals("Mouse", StringComparison.OrdinalIgnoreCase) ||

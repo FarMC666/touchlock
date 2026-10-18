@@ -101,6 +101,7 @@ public sealed class WindowsDevices : IDeviceBackend
     public bool IsDisabled(string id)
     {
         Check(CM_Get_DevNode_Status(out uint status, out uint problem, Locate(id), 0));
+        if (problem == 14 || (status & 0x100) != 0) throw new IOException($"设备需要重启，无法确认临时操作生效：status=0x{status:X}, problem={problem}, needsRestart=true。");
         if ((status & 0x400) != 0 && problem == 22) return true;
         if ((status & 0x400) == 0 && problem == 0 && (status & 8) != 0) return false;
         throw new IOException($"设备状态无法确认为启用或禁用：status=0x{status:X}, problem={problem}。");
@@ -123,7 +124,7 @@ public sealed class WindowsDevices : IDeviceBackend
         while (true)
         {
             Check(CM_Get_DevNode_Status(out uint status, out uint problem, Locate(id), 0));
-            if ((status & 0x400) == 0 && (status & 8) != 0) return;
+            if ((status & (0x400 | 0x100)) == 0 && problem == 0 && (status & 8) != 0) return;
             if (Environment.TickCount64 >= deadline) throw new IOException($"触摸屏尚未恢复 (problem {problem})。");
             Thread.Sleep(50);
         }

@@ -69,8 +69,8 @@ internal sealed class Controller : IDisposable
         var shown = state == LockState.Unlocked && unavailable.Length > 0 ? LockState.Unavailable : state;
         bool startupEnabled = false; string startupError = "";
         try { startupEnabled = startup.Read(); } catch (Exception e) { startupError = "无法确认开机自启动：" + e.Message; }
-        return new(shown, generation, unavailable.Length == 0 && !operationRunning, reason.Length > 0 ? reason : unavailable, stop, bluetoothSettingsBlocked, bluetoothSettingsError,
-            observed.Count, observed.Count(d => d.Disabled), operationId, operationRunning && !backgroundInspect, operationError, devices.Summary, Diagnostics.Error, startupEnabled, startupError);
+        return new(shown, generation, unavailable.Length == 0 && !operationRunning, Display(reason.Length > 0 ? reason : unavailable), stop, bluetoothSettingsBlocked, Display(bluetoothSettingsError, 512),
+            observed.Count, observed.Count(d => d.Disabled), operationId, operationRunning && !backgroundInspect, Display(operationError), devices.Summary, Display(Diagnostics.Error, 512), startupEnabled, Display(startupError, 512));
     }
     // The gate protects state only, never a potentially slow device API. One worker owns all device I/O.
     private void StartDeviceOperation(string action, bool background = false)
@@ -236,7 +236,8 @@ internal sealed class Controller : IDisposable
             catch { /* Invalid/disconnected clients receive no authority or success response. */ }
         }
     }
-    private ControlReply Reply(bool success, string error = "", Guid id = default) => new(success, Status(), error, id);
+    private static string Display(string text, int maximum = 2048) => text.Length <= maximum ? text : text[..maximum] + "…（完整信息见诊断日志）";
+    private ControlReply Reply(bool success, string error = "", Guid id = default) => new(success, Status(), Display(error), id);
     internal ControlReply Command(ControlRequest command, ClientIdentity client)
     {
         lock (gate) return CommandCore(command, client);

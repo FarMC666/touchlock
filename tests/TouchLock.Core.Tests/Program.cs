@@ -63,6 +63,13 @@ try
     finally { CryptographicOperations.ZeroMemory(password); }
     using var stream = new MemoryStream(); await Wire.WriteAsync(stream, new ControlRequest("lock"), CancellationToken.None); stream.Position = 0;
     Check((await Wire.ReadAsync<ControlRequest>(stream, CancellationToken.None)).Version == 2, "V2 framing round trip");
+    using var detailed = new MemoryStream();
+    var largeReply = new ControlReply(false, new Status(LockState.Restoring, 1, false, new string('汉', 2048), OperationError: new string('汉', 2048)), new string('汉', 2048));
+    await Wire.WriteAsync(detailed, largeReply, CancellationToken.None); detailed.Position = 0;
+    Check((await Wire.ReadAsync<ControlReply>(detailed, CancellationToken.None)).Status.State == LockState.Restoring, "multi-device Unicode diagnostics fit bounded response framing");
+    using var oversized = new MemoryStream();
+    try { await Wire.WriteAsync(oversized, new ControlRequest(new string('x', 9000)), CancellationToken.None); throw new Exception("oversized request accepted"); }
+    catch (InvalidDataException) { Check(true, "control request size remains limited to 8 KB"); }
     using var bad = new MemoryStream(); byte[] size = new byte[4]; BinaryPrimitives.WriteInt32LittleEndian(size, 513); bad.Write(size); bad.Position = 0;
     try { await Wire.ReadSecret(bad, CancellationToken.None); throw new Exception("secret bounds"); } catch (InvalidDataException) { Check(true, "binary secret length bounded"); }
     Console.WriteLine($"{passed} checks passed.");

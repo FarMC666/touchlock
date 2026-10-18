@@ -15,6 +15,8 @@ internal static class DeviceTests
         foreach (var unsafeNode in new[] { kuma[0] with { Bluetooth = true }, kuma[0] with { DeviceClass = "Keyboard" }, kuma[0] with { CompatibleIds = ["HID_DEVICE_UP:000D_U:0005"] }, kuma[0] with { ConfigRet = 5 } })
             check(!DeviceSelection.Select([unsafeNode]).Single().Safe, "Kuma explicit unsafe identity or unreadable state rejected");
         check(DeviceSelection.Select([touch with { Name = "Precision Touchpad" }]).All(d => !d.Safe), "touchpad never selected as safe");
+        var restart = DeviceSelection.Select([kuma[0] with { Status = healthy | 0x100 }]).Single();
+        check(!restart.Safe && restart.NeedsRestart, "pending restart is explicit and never accepted as usable touch state");
         var backend = new Batch(result);
         var transaction = new DeviceTransaction(backend, Path.Combine(folder, "kuma-recovery.json"));
         transaction.Lock();
@@ -27,12 +29,26 @@ internal static class DeviceTests
         backend.Fail.Clear(); backend.IgnoreDisable = true;
         try { transaction.Lock(); throw new Exception("lock should fail"); } catch (IOException) { }
         check(transaction.Summary is { Succeeded: 0, Failed: 5 } && !transaction.Pending, "API success without state change never accepted");
+        backend.IgnoreDisable = false; backend.AddTargetAfterDisable = true;
+        try { transaction.Lock(); throw new Exception("lock should reject topology change"); } catch (IOException) { }
+        check(backend.Disabled.Count == 0 && !transaction.Pending, "new touchscreen during lock prevents success and restores owned instances");
+        backend.AddTargetAfterDisable = false;
+        transaction.Lock(); backend.UnsafeRecovery = true;
+        try { transaction.Restore(); throw new Exception("restore should reject unsafe identity"); } catch (IOException) { }
+        check(transaction.Pending && backend.Disabled.Count == 5, "changed unsafe recovery identity remains journaled without enabling");
+        backend.UnsafeRecovery = false; transaction.Restore();
+        check(!transaction.Pending, "safe identity recovery can retry successfully");
     }
     private sealed class Batch(IReadOnlyList<TouchDevice> devices) : IDeviceBackend
     {
         public HashSet<string> Disabled = [], Fail = [];
-        public bool IgnoreDisable;
-        public IReadOnlyList<TouchDevice> Enumerate() => devices.Select(d => d with { Disabled = Disabled.Contains(d.Id) }).ToArray();
+        public bool IgnoreDisable, AddTargetAfterDisable, UnsafeRecovery;
+        public IReadOnlyList<TouchDevice> Enumerate()
+        {
+            var values = devices.Select(d => d with { Disabled = Disabled.Contains(d.Id), Safe = !UnsafeRecovery }).ToList();
+            if (AddTargetAfterDisable && Disabled.Count == 5) values.Add(new("ROOT\\KUMA\\NEW", false, true, true, Match: TouchMatch.Kuma, Name: DeviceSelection.KumaName));
+            return values;
+        }
         public bool IsDisabled(string id) => Disabled.Contains(id);
         public void Disable(string id) { if (Fail.Contains(id)) throw new IOException("CONFIGRET 0x33; Win32 5"); if (!IgnoreDisable) Disabled.Add(id); }
         public void Enable(string id) => Disabled.Remove(id);

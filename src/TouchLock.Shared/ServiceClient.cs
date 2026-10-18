@@ -3,6 +3,18 @@ using System.Security.Principal;
 namespace TouchLock.Shared;
 public static class ServiceClient
 {
+    public static async Task<ControlReply> RequestWhenIdle(ControlRequest request)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            var reply = await Request(request);
+            bool backgroundBusy = !reply.Success && !reply.Status.OperationRunning &&
+                reply.Status.State is LockState.Unlocked or LockState.Unavailable or LockState.Locked &&
+                reply.Error.Contains("操作正在进行", StringComparison.Ordinal);
+            if (!backgroundBusy || attempt >= 20 || request.Operation == "lock" && reply.Status.State == LockState.Locked) return reply;
+            await Task.Delay(100);
+        }
+    }
     public static async Task<ControlReply> Complete(ControlReply reply)
     {
         if (!reply.Success || !reply.Status.OperationRunning) return reply;
