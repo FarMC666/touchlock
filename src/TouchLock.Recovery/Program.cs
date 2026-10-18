@@ -7,6 +7,7 @@ internal static class Program
     {
         if (args.Length != 1 || !args[0].StartsWith("TouchLock.Guard.v2.", StringComparison.Ordinal) || !System.Security.Principal.WindowsIdentity.GetCurrent().IsSystem) return 64;
         Paths.PrepareData();
+        Diagnostics.Initialize(Paths.Data);
         using var pipe = new NamedPipeClientStream(".", args[0], PipeDirection.InOut, PipeOptions.Asynchronous);
         using var connect = new CancellationTokenSource(10000);
         try { await pipe.ConnectAsync(connect.Token); } catch { return 2; }

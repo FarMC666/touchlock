@@ -42,7 +42,7 @@ internal sealed class Controller : IDisposable
             passwords.Read();
             if (devices.Pending && state is not (LockState.Locked or LockState.Authenticating)) return "正在恢复触摸设备。";
             var found = backend.Enumerate();
-            if (found.Count == 0) return "未找到标准 HID 触摸屏。";
+            if (found.Count == 0) return "未找到可操作的 Kuma 或标准 HID 触摸屏。";
             if (found.Any(d => !d.Safe)) return found.First(d => !d.Safe).Reason;
             if (state is LockState.Unlocked or LockState.Unavailable && !found.Any(d => !d.Disabled && d.Disableable)) return "没有可以临时锁定的触摸屏。";
             return "";
@@ -58,6 +58,8 @@ internal sealed class Controller : IDisposable
     public async Task Run(CancellationToken shutdown)
     {
         Paths.PrepareData();
+        Diagnostics.Initialize(Paths.Data);
+        Diagnostics.Write("device-inventory", WindowsDevices.Inventory());
         try { WindowsSecurity.WithDeviceMutex(devices.Restore); } catch (Exception e) { reason = e.Message; Transition(LockState.Restoring); }
         try
         {

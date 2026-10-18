@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using TouchLock.Shared;
-if (args.SequenceEqual(["--inventory"])) { Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new WindowsDevices().Enumerate())); return; }
+if (args.SequenceEqual(["--inventory"])) { Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { Inventory = WindowsDevices.Inventory(), Targets = new WindowsDevices().Enumerate() })); return; }
 if (args.Length == 2 && args[0] == "--validate-install") { Console.WriteLine(InstallationDirectory.ValidateNew(args[1])); return; }
 int passed = 0;
 void Check(bool condition, string name) { if (!condition) throw new Exception(name); Console.WriteLine("PASS " + name); passed++; }
@@ -40,6 +40,7 @@ try
     File.WriteAllText(journal, "{bad}"); Throws(transaction.Restore, "corrupt journal never silently discarded"); File.Delete(journal);
     File.WriteAllText(journal, "{\"Version\":1,\"DeviceIds\":[\"USB\\\\parent\"]}"); Throws(transaction.Restore, "non HID recovery target rejected"); File.Delete(journal);
     fake.Disableable = false; Throws(transaction.Lock, "non-dynamic device rejected"); fake.Disableable = true;
+    DeviceTests.Run(folder, Check);
     var store = new PasswordStore(Path.Combine(folder, "password.json"));
     byte[] password = Encoding.UTF8.GetBytes("测试口令-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(12)));
     try
