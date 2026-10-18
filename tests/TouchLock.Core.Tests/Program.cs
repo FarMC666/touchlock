@@ -52,6 +52,7 @@ try
         Check(!File.ReadAllText(Path.Combine(folder, "password.json")).Contains(Encoding.UTF8.GetString(password), StringComparison.Ordinal), "no plaintext persisted");
         Check(!PasswordStore.ValidLength(Encoding.UTF8.GetBytes("1234567")) && PasswordStore.ValidLength(Encoding.UTF8.GetBytes("12345678")) && !PasswordStore.ValidLength(Encoding.UTF8.GetBytes(new string('a', 129))), "password length bounds");
         BluetoothRestrictionTests.Run(folder, password, Check);
+        ControllerDeviceTests.Run(folder, password, Check);
         File.WriteAllText(Path.Combine(folder, "password.json"), "{}"); Throws(() => store.Verify(password), "corrupt configuration rejects authentication");
         File.WriteAllText(Path.Combine(folder, "password.json"), "{\"Version\":1,\"Algorithm\":\"PBKDF2-HMAC-SHA256\",\"Iterations\":600000,\"Salt\":null,\"Hash\":null}");
         try { store.Read(); throw new Exception("null password fields"); } catch (InvalidDataException) { Check(true, "null password fields report invalid configuration"); }

@@ -19,7 +19,7 @@ App 使用 Windows Desktop 自带的 UI Automation 组件。App、Service、Reco
 
 ## 设备事务
 
-SetupAPI 只枚举当前存在的 HID 类节点，通过兼容 ID `HID_DEVICE_UP:000D_U:0004` 精确识别 Touchscreen。混合 Usage 身份、同父节点或同 ContainerId 的鼠标集合、异常状态和不支持动态禁用的节点被拒绝。枚举不触碰任何节点。禁用前再次检查集合身份。
+SetupAPI 枚举当前存在的全部设备类。`DeviceSelection` 优先精确匹配全部 `Kuma - Touch Screen Extend Service`，没有 Kuma 时通过 `HID_DEVICE_UP:000D_U:0004` 识别标准 Touchscreen。Kuma 不因同容器的鼠标节点被拒绝；明确的其他输入身份、蓝牙祖先、异常状态仍拒绝。通用 HID 保留混合集合和鼠标伴随集合检查。枚举不改变设备，禁用前再次检查身份。
 
 受保护的 `Global\TouchLock.DeviceOperations.v2` 互斥量串行化服务、恢复进程和安装程序的设备操作。恢复记录使用 WriteThrough、Flush(true) 与同目录原子替换；只记录观察到启用的触摸节点，每次禁用前先写记录。`CM_Disable_DevNode` 仅传 `CM_DISABLE_UI_NOT_OK (4)`，随后核对禁用状态；全部成功才报告 Locked。失败则回滚，回滚失败继续保留记录并重试。
 
@@ -47,7 +47,9 @@ App 在独立 MTA 线程中每 250 毫秒扫描当前会话的系统设置窗口
 
 ## 状态与恢复
 
-`Unlocked → Locking → Locked → Authenticating → Restoring → Unlocked/Stopping`。错误、取消、超时和托盘进程退出返回认证前状态。未锁定的退出认证取消仍未锁定；修改口令保留原锁定状态。恢复失败保持 Restoring，保留服务与恢复记录。
+`Unlocked → Locking → Locked → Authenticating → Restoring → Unlocked/Stopping`。硬件操作由单个串行 worker 执行，不占用 IPC 状态锁；命令成功表示接受操作，客户端轮询同一 OperationId 到完成并检查 OperationError。状态包含实际目标数、禁用数和逐阶段汇总，不能把接受操作当成设备成功。快捷键先请求新设备快照，再选择锁定或密码恢复。
+
+认证错误、取消和超时返回认证前状态；修改口令保留锁定状态。恢复失败保持 Restoring 和恢复记录。设备事务有进度回报；worker 超过 15 秒无进度时停止守护续约，守护仍按 30 秒失联机制终止旧服务后恢复。后台枚举不覆盖前台操作的结果，完整退出等待恢复完成并短暂保留最终状态供托盘读取。
 
 Service 主循环处理设备/会话变化后每秒续约。不是脱离业务处理的独立心跳线程。Recovery 先打开服务的精确进程句柄，再发 Ready；没有 Ready 不允许锁定。服务退出则恢复；30 秒失联则先终止并等待旧服务，再获取互斥量恢复。新服务先恢复旧记录，不恢复旧锁定。SCM 异常重启间隔 10 秒，连续失败后 60 秒。
 

@@ -3,7 +3,9 @@ using System.Text.Json;
 namespace TouchLock.Shared;
 public enum LockState { Unlocked, Locking, Locked, Authenticating, Restoring, Stopping, Unavailable }
 public enum AuthenticationIntent { Unlock, Exit, ChangePassword, AllowBluetoothSettings }
-public sealed record Status(LockState State, long Generation, bool Available, string Reason, bool Stopped = false, bool BluetoothSettingsBlocked = false, string BluetoothSettingsError = "");
+public sealed record Status(LockState State, long Generation, bool Available, string Reason, bool Stopped = false, bool BluetoothSettingsBlocked = false, string BluetoothSettingsError = "",
+    int TargetCount = 0, int DisabledCount = 0, Guid OperationId = default, bool OperationRunning = false,
+    string OperationError = "", DeviceOperationSummary? DeviceOperation = null, string DiagnosticsError = "");
 public sealed record ControlRequest(string Operation, int Version = 2, AuthenticationIntent Intent = AuthenticationIntent.Unlock, Guid RequestId = default);
 public sealed record ControlReply(bool Success, Status Status, string Error = "", Guid RequestId = default);
 public static class Wire

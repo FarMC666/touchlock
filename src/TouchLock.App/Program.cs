@@ -7,6 +7,10 @@ internal static class Program
 {
     [STAThread] public static int Main(string[] args)
     {
+        if (args.SequenceEqual(["--inventory"]))
+        {
+            Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new { Windows = Environment.OSVersion.VersionString, Version = Diagnostics.Version, Inventory = WindowsDevices.Inventory(), Targets = new WindowsDevices().Enumerate() })); return 0;
+        }
         if (args.SequenceEqual(["--status"]))
         {
             try { Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(ServiceClient.Request(new("status")).GetAwaiter().GetResult())); return 0; } catch { return 2; }
@@ -45,15 +49,16 @@ internal sealed class Tray : ApplicationContext
         locking.Click += async (_, _) => await Lock(); unlocking.Click += async (_, _) => await Authenticate(AuthenticationIntent.Unlock);
         changing.Click += async (_, _) => await Authenticate(AuthenticationIntent.ChangePassword); exit.Click += async (_, _) => await Authenticate(AuthenticationIntent.Exit);
         bluetooth.Click += async (_, _) => await ToggleBluetoothSettings();
-        hotkey = new Hotkey(async () => await Lock()); poll.Tick += async (_, _) => await Poll(); poll.Start();
+        hotkey = new Hotkey(async () => await ToggleTouch()); poll.Tick += async (_, _) => await Poll(); poll.Start();
         _ = Poll();
     }
     private void RefreshMenu()
     {
         status.Text = latest == null ? "TouchLock · 服务连接中" : "TouchLock · " + (latest.State switch
         {
-            LockState.Locked => "触摸已锁定", LockState.Authenticating => "正在认证", LockState.Restoring => "正在恢复触摸", LockState.Unavailable => "不可用", _ => "触摸可用"
+            LockState.Locked => "触摸已锁定", LockState.Locking => "正在锁定触摸", LockState.Authenticating => "正在认证", LockState.Restoring => "正在恢复触摸", LockState.Stopping => "正在退出", LockState.Unavailable => latest.TargetCount == 0 ? "无可操作触摸设备" : "不可用", _ => "触摸可用"
         });
+        icon.Text = status.Text.Length <= 63 ? status.Text : status.Text[..63];
         locking.Enabled = !busy && latest is { State: LockState.Unlocked, Available: true };
         unlocking.Enabled = !busy && latest?.State == LockState.Locked;
         changing.Enabled = exit.Enabled = !busy && latest?.State is LockState.Unlocked or LockState.Unavailable or LockState.Locked;
@@ -72,8 +77,28 @@ internal sealed class Tray : ApplicationContext
     private async Task Lock()
     {
         if (busy) return;
-        try { latest = (await ServiceClient.Request(new("lock"))).Status; } catch { }
-        RefreshMenu(); // Lock never displays a window, notification, sound, or changed icon.
+        busy = true; RefreshMenu();
+        try
+        {
+            var result = await ServiceClient.Complete(await ServiceClient.Request(new("lock"))); latest = result.Status;
+            if (!result.Success) MessageBox.Show(result.Error, "TouchLock");
+        }
+        catch { MessageBox.Show("无法确认锁定结果，请检查托盘状态及诊断日志。", "TouchLock"); }
+        finally { busy = false; RefreshMenu(); }
+    }
+    private async Task ToggleTouch()
+    {
+        if (busy) return;
+        busy = true; RefreshMenu();
+        try
+        {
+            var result = await ServiceClient.Complete(await ServiceClient.Request(new("refresh"))); latest = result.Status;
+            if (!result.Success) return;
+        }
+        catch { return; }
+        finally { busy = false; RefreshMenu(); }
+        if (latest?.State == LockState.Locked) await Authenticate(AuthenticationIntent.Unlock);
+        else if (latest is { State: LockState.Unlocked, Available: true }) await Lock();
     }
     private async Task ToggleBluetoothSettings()
     {
@@ -98,9 +123,10 @@ internal sealed class Tray : ApplicationContext
             request = started.RequestId;
             using var dialog = new PasswordDialog(change: intent == AuthenticationIntent.ChangePassword, exit: intent == AuthenticationIntent.Exit, allowBluetoothSettings: intent == AuthenticationIntent.AllowBluetoothSettings);
             if (dialog.ShowDialog() != DialogResult.OK) return;
-            var result = await ServiceClient.Submit(request, dialog.Password, dialog.NewPassword); request = Guid.Empty; latest = result.Status;
+            var result = await ServiceClient.Submit(request, dialog.Password, dialog.NewPassword); request = Guid.Empty;
+            result = await ServiceClient.Complete(result); latest = result.Status;
             if (!result.Success) MessageBox.Show(result.Error, "TouchLock");
-            else if (intent == AuthenticationIntent.Exit) ExitThread();
+            else if (intent == AuthenticationIntent.Exit && result.Status.Stopped) ExitThread();
         }
         catch { MessageBox.Show("无法完成认证。请稍后重试，或运行安装程序维护。", "TouchLock"); }
         finally

@@ -93,7 +93,7 @@ public sealed class DeviceTransaction(IDeviceBackend backend, string journal)
     public void Restore()
     {
         var targets = ReadTargets();
-        if (targets.Length == 0) return;
+        if (targets.Length == 0) { if (Pending) File.Delete(journal); return; }
         List<RecoveryTarget> pending = [];
         int attempted = 0;
         foreach (var target in targets)
