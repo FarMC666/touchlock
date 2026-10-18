@@ -45,7 +45,7 @@ Service 保存唯一的勾选状态，`block-bluetooth-settings` 无口令开启
 
 App 在独立 MTA 线程中每 250 毫秒扫描当前会话的系统设置窗口，校验 `SystemSettings.exe` 系统路径，并兼容 `ApplicationFrameHost` 承载窗口。通过蓝牙页面内容控件的 AutomationId 判断当前页面，不匹配侧栏或搜索中的“蓝牙”字样；命中后向对应窗口发送 `WM_CLOSE`，不终止进程。UI Automation 遵守[独立 MTA 线程要求](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading)；控件标识可能随系统版本变化，需在目标系统验收。取消勾选与发送关闭消息串行化；托盘退出停止监控，重启托盘后从服务状态继续执行。
 
-只处理系统“设置”中的蓝牙页面，不修改蓝牙开关或配对，不覆盖快速设置、传统控制面板或第三方工具。不是 Windows 访问控制或阻止所有蓝牙操作的安全策略。
+系统策略限制蓝牙及已连接设备页面，监控辅助处理已打开的窗口；不修改蓝牙开关或配对，不覆盖快速设置、传统控制面板或第三方工具。它不代替蓝牙设备访问控制。
 
 ## 状态与恢复
 

@@ -86,7 +86,7 @@ internal sealed class SetupForm : AdaptiveForm
     private readonly Button install = new() { Text = "安装并设置管理口令", AutoSize = true, Dock = DockStyle.Top, MinimumSize = new Size(0, 40) };
     private readonly Button reset = new() { Text = "重置忘记的管理口令", AutoSize = true, Dock = DockStyle.Top, MinimumSize = new Size(0, 40) };
     private readonly Button uninstall = new() { Text = "卸载 TouchLock", AutoSize = true, Dock = DockStyle.Top, MinimumSize = new Size(0, 40) };
-    private readonly CheckBox delete = new() { Text = "卸载时同时删除口令和蓝牙限制配置", AutoSize = true };
+    private readonly CheckBox delete = new() { Text = "卸载时同时删除保留配置和诊断日志", AutoSize = true };
     private readonly TextBox location = new() { Dock = DockStyle.Fill };
     private readonly Button browse = new() { Text = "浏览...", AutoSize = true, MinimumSize = new Size(85, 33) };
     public SetupForm()
