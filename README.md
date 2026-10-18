@@ -1,6 +1,6 @@
 # TouchLock 1.0.0
 
-临时锁定 Windows 触摸屏输入，优先控制全部 `Kuma - Touch Screen Extend Service` 实例；不存在 Kuma 时使用标准 HID Touchscreen 识别。保留鼠标与物理键盘操作，适用于 Windows 10/11 x64。
+TouchLock 是为便于管理希沃白板而设计的 Windows 触摸屏管理工具。支持临时锁定触摸屏输入，优先控制全部 `Kuma - Touch Screen Extend Service` 实例；不存在 Kuma 时使用标准 HID Touchscreen 识别。保留鼠标与物理键盘操作，适用于 Windows 10/11 x64。
 
 ## 安装
 
