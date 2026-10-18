@@ -31,14 +31,14 @@ internal sealed class Controller : IDisposable
     private readonly Func<bool>? recoveryHealthy;
     private readonly Action<Action> withDeviceMutex;
     public Controller() : this(new WindowsDevices(), Paths.Password, Paths.Journal, Paths.Restrictions) { }
-    internal Controller(IDeviceBackend backend, string passwordPath, string journalPath, string restrictionsPath, Func<bool>? recoveryHealthy = null, Action<Action>? withDeviceMutex = null)
+    internal Controller(IDeviceBackend backend, string passwordPath, string journalPath, string restrictionsPath, Func<bool>? recoveryHealthy = null, Action<Action>? withDeviceMutex = null, ISettingsPolicy? settingsPolicy = null)
     {
-        this.backend = backend; devices = new(backend, journalPath); passwords = new(passwordPath); restrictions = new(restrictionsPath);
+        this.backend = backend; devices = new(backend, journalPath); passwords = new(passwordPath); restrictions = new(restrictionsPath, settingsPolicy);
         this.recoveryHealthy = recoveryHealthy;
         this.withDeviceMutex = withDeviceMutex ?? WindowsSecurity.WithDeviceMutex;
         devices.Progress = () => Interlocked.Exchange(ref progressAt, Now);
-        try { bluetoothSettingsBlocked = restrictions.Read(); }
-        catch { bluetoothSettingsBlocked = true; bluetoothSettingsError = "蓝牙设置限制配置读取失败，已保持限制；可输入管理口令取消限制后重新设置。"; }
+        try { restrictions.Restore(); }
+        catch (Exception e) { bluetoothSettingsBlocked = true; bluetoothSettingsError = e.Message; }
     }
     public void SessionChanged() => Interlocked.Exchange(ref sessionChange, 1);
     private bool GuardHealthy => recoveryHealthy?.Invoke() ?? (!guardFailed && guard is { HasExited: false } && lease is { IsConnected: true });
@@ -147,6 +147,11 @@ internal sealed class Controller : IDisposable
             {
                 lock (gate)
                 {
+                    if (bluetoothSettingsBlocked)
+                    {
+                        try { bluetoothSettingsError = restrictions.ValidationError(); }
+                        catch (Exception e) { bluetoothSettingsError = "蓝牙保护状态检查失败：" + e.Message; }
+                    }
                     if (!GuardHealthy) { guardFailed = true; Cancel(); Restore(); reason = "触摸恢复进程异常，已停止锁定功能。"; }
                     if (Interlocked.Exchange(ref sessionChange, 0) != 0) { Cancel(); Restore(); }
                     if (!operationRunning && (state == LockState.Restoring || restoreRequested)) Restore();
@@ -171,8 +176,9 @@ internal sealed class Controller : IDisposable
             if (deviceTask != null) while (!deviceTask.IsCompleted) { await Pulse(); await Task.WhenAny(deviceTask, Task.Delay(500)); }
             io.Cancel();
             try { await Task.WhenAll(control, authentication); } catch { }
+            try { restrictions.Restore(); } catch (Exception e) { Diagnostics.Write("bluetooth-policy-restore-failed", new { Error = e.Message }); }
             // If restore failed, leave the guardian alive to retry; never erase its journal.
-            if (!devices.Pending && GuardHealthy)
+            if (!devices.Pending && !restrictions.Pending && GuardHealthy)
             {
                 try { await lease!.WriteAsync(new byte[] { 2 }); await lease.FlushAsync(); } catch { }
                 try { if (guard != null) await guard.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
@@ -251,7 +257,7 @@ internal sealed class Controller : IDisposable
         }
         if (command.Operation == "begin")
         {
-            if (operationRunning || state is not (LockState.Unlocked or LockState.Locked)) return Reply(false, "已有认证或设备操作正在进行。");
+            if (operationRunning && !backgroundInspect || state is not (LockState.Unlocked or LockState.Locked)) return Reply(false, "已有认证或设备操作正在进行。");
             if (!Enum.IsDefined(command.Intent) || command.Intent == AuthenticationIntent.Unlock && state != LockState.Locked) return Reply(false, "触摸尚未锁定。");
             if (command.Intent == AuthenticationIntent.AllowBluetoothSettings && !bluetoothSettingsBlocked) return Reply(false, "当前未禁止进入 Windows 蓝牙设置。");
             if (Now < cooldown) return Reply(false, "错误尝试过多，请等待 30 秒再试。");
@@ -268,7 +274,11 @@ internal sealed class Controller : IDisposable
         {
             restrictions.Set(blocked); bluetoothSettingsBlocked = blocked; bluetoothSettingsError = ""; generation++; return Reply(true);
         }
-        catch { bluetoothSettingsError = "蓝牙设置限制保存失败，原设置保持不变。请稍后重试，或运行安装程序维护。"; return Reply(false, bluetoothSettingsError); }
+        catch (Exception e)
+        {
+            try { bluetoothSettingsBlocked = restrictions.Read(); } catch { bluetoothSettingsBlocked = true; }
+            bluetoothSettingsError = e.Message; return Reply(false, bluetoothSettingsError);
+        }
     }
     internal ControlReply Authenticate(ControlRequest command, ClientIdentity client, byte[] password, byte[] replacement)
     {
@@ -296,7 +306,9 @@ internal sealed class Controller : IDisposable
             {
                 Cancel(); return SetBluetoothSettingsBlocked(false);
             }
-            var action = intent; Cancel(); exitRequested = action == AuthenticationIntent.Exit; Restore();
+            var action = intent; Cancel();
+            if (action == AuthenticationIntent.Exit) { var cleanup = SetBluetoothSettingsBlocked(false); if (!cleanup.Success) return cleanup; }
+            exitRequested = action == AuthenticationIntent.Exit; Restore();
             return Reply(true);
         }
         catch { Cancel(); return Reply(false, "敏感操作未完成，原限制和恢复记录已保留。请检查配置权限或通过安装程序维护。"); }

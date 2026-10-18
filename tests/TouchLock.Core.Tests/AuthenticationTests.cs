@@ -9,7 +9,7 @@ internal static class AuthenticationTests
     {
         string passwordPath = Path.Combine(folder, "auth-password.json");
         new PasswordStore(passwordPath).Set(password);
-        using var controller = new Controller(new NoDevices(), passwordPath, Path.Combine(folder, "auth-recovery.json"), Path.Combine(folder, "auth-restrictions.json"));
+        using var controller = new Controller(new NoDevices(), passwordPath, Path.Combine(folder, "auth-recovery.json"), Path.Combine(folder, "auth-restrictions.json"), settingsPolicy: new TestSettingsPolicy());
         ClientIdentity owner = new(301, 1, 22), intruder = new(302, 1, 23);
         var challenge = controller.Command(new("begin", Intent: AuthenticationIntent.Exit), owner);
         check(challenge.Success, "password exit available without touch hardware");

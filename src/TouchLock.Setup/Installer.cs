@@ -29,6 +29,7 @@ internal static class Installer
             if (entry.FullName.Contains("..", StringComparison.Ordinal) || Path.IsPathRooted(entry.FullName) || entry.FullName.Contains(':')) throw new InvalidDataException();
         Paths.PrepareData();
         WindowsSecurity.WithDeviceMutex(() => new DeviceTransaction(new WindowsDevices(), Paths.Journal).Restore());
+        new RestrictionsStore(Paths.Restrictions).Restore();
         // Compute and validate before creating a partially installed service.
         var record = PasswordStore.Derive(password);
         InstallationDirectory.Prepare(install);
@@ -89,6 +90,7 @@ internal static class Installer
         {
             using (p) { using var h = WindowsSecurity.OpenProcess(0x1000 | 0x100000, false, (uint)p.Id); if (!h.IsInvalid && WindowsSecurity.Image(h).Equals(Path.Combine(Paths.Install, "TouchLock.Recovery.exe"), StringComparison.OrdinalIgnoreCase) && !p.WaitForExit(35000)) throw new IOException("恢复进程仍在运行，请稍后重试。"); }
         }
+        new RestrictionsStore(Paths.Restrictions).Restore();
     }
     public static void Reset(byte[] password)
     {

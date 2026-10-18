@@ -39,7 +39,7 @@ Setup 卸载须提供当前管理口令，并在停止服务、恢复设备或�
 
 Service 保存唯一的勾选状态，`block-bluetooth-settings` 无口令开启；取消勾选使用 `AllowBluetoothSettings` 认证意图，沿用一次性请求、当前管理口令和错误冷却。认证成功仅修改蓝牙限制，不恢复触摸设备、不删除恢复记录。V2 状态消息追加可选字段，既有认证意图编号保持不变。
 
-状态以版本 1 的 JSON 原子保存到 `%ProgramData%\TouchLock\restrictions.json`，继承目录的 SYSTEM/Admin ACL。旧安装没有文件时默认未勾选；损坏时保持限制并显示错误，输入正确口令取消限制可重新写入有效配置。保存失败不更新内存勾选状态。默认卸载保留配置，显式删除配置时一并删除；重置口令保留勾选状态。
+`RestrictionsStore` 的版本 2 文件保存机器级 `SettingsPageVisibility` 原值和本程序应用值，用于故障恢复，不用于跨重启恢复运行勾选。写前先保存记录，写后读回；兼容已有 hide/showonly 列表。清理仅在当前值仍匹配本程序应用值或原值时执行，外部变化报告冲突并保留记录。服务启动、退出、独立守护恢复及管理员维护都会清理本程序策略；旧版只保存勾选的文件会重置为默认关闭。
 
 App 在独立 MTA 线程中每 250 毫秒扫描当前会话的系统设置窗口，校验 `SystemSettings.exe` 系统路径，并兼容 `ApplicationFrameHost` 承载窗口。通过蓝牙页面内容控件的 AutomationId 判断当前页面，不匹配侧栏或搜索中的“蓝牙”字样；命中后向对应窗口发送 `WM_CLOSE`，不终止进程。UI Automation 遵守[独立 MTA 线程要求](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading)；控件标识可能随系统版本变化，需在目标系统验收。取消勾选与发送关闭消息串行化；托盘退出停止监控，重启托盘后从服务状态继续执行。
 

@@ -110,7 +110,7 @@ internal static class Diagnostic
             Check(!(await Begin(AuthenticationIntent.Exit)).Success, "five failures trigger cooldown");
             await Task.Delay(31000);
             challenge = await Begin(AuthenticationIntent.Exit); Check(challenge.Success, "cooldown expires");
-            var exit = await ServiceClient.Submit(challenge.RequestId, password, []); Check(exit.Success && exit.Status.Stopped, "correct password authorizes exit"); return 0;
+            var exit = await ServiceClient.Complete(await ServiceClient.Submit(challenge.RequestId, password, [])); Check(exit.Success && exit.Status.Stopped, "correct password authorizes exit after completed recovery"); return 0;
         }
         catch (Exception e) { Console.WriteLine("FAIL " + e.GetType().Name + " " + e.Message); return 1; }
         finally { CryptographicOperations.ZeroMemory(password); CryptographicOperations.ZeroMemory(next); }

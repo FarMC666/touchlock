@@ -6,7 +6,7 @@ internal static class ControllerDeviceTests
     public static void Run(string folder, byte[] password, Action<bool, string> check)
     {
         var backend = new Backend();
-        using var controller = new Controller(backend, Path.Combine(folder, "password.json"), Path.Combine(folder, "async-recovery.json"), Path.Combine(folder, "async-restrictions.json"), () => true, action => action());
+        using var controller = new Controller(backend, Path.Combine(folder, "password.json"), Path.Combine(folder, "async-recovery.json"), Path.Combine(folder, "async-restrictions.json"), () => true, action => action(), new TestSettingsPolicy());
         ClientIdentity client = new(201, 1, 555);
         ControlReply Wait(ControlReply accepted)
         {

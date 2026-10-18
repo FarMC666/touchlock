@@ -63,7 +63,9 @@ internal sealed class Tray : ApplicationContext
         unlocking.Enabled = !busy && latest?.State == LockState.Locked;
         changing.Enabled = exit.Enabled = !busy && latest?.State is LockState.Unlocked or LockState.Unavailable or LockState.Locked;
         bluetooth.Enabled = !busy && latest is { Stopped: false, State: LockState.Unlocked or LockState.Unavailable or LockState.Locked };
+        bool policyChanged = bluetooth.Checked != (latest?.BluetoothSettingsBlocked == true);
         bluetooth.Checked = latest?.BluetoothSettingsBlocked == true;
+        if (policyChanged) _ = Task.Run(WindowsSettingsPolicy.NotifyChange); // Notify windows in the interactive session, not service session 0.
         bluetoothMonitor.Enabled = bluetooth.Checked;
         bluetooth.Text = "禁止进入 Windows 蓝牙设置" + (bluetoothMonitor.Error.Length > 0 || latest?.BluetoothSettingsError.Length > 0 ? "（异常，查看关于）" : "");
     }

@@ -37,7 +37,7 @@ internal static class Program
         var transaction = new DeviceTransaction(new WindowsDevices(), Paths.Journal);
         while (true)
         {
-            try { WindowsSecurity.WithDeviceMutex(transaction.Restore); return 0; }
+            try { WindowsSecurity.WithDeviceMutex(transaction.Restore); new RestrictionsStore(Paths.Restrictions).Restore(); return 0; }
             catch { await Task.Delay(1000); }
         }
     }
